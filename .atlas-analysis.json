@@ -1,0 +1,108 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "AFS — Agentic File System",
+  "projectDescription": "A virtual filesystem abstraction that gives AI agents a unified, path-based interface to any data source — local files, databases, APIs, cloud services, and more.",
+  "theme": "luma",
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "concepts"
+            ]
+          },
+          {
+            "group": "Providers",
+            "pages": [
+              "providers/overview",
+              "providers/filesystem",
+              "providers/git",
+              "providers/json-yaml",
+              "providers/sqlite",
+              "providers/http",
+              "providers/mcp",
+              "providers/ui",
+              "providers/custom"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/mounting",
+              "guides/operations",
+              "guides/mcp-integration",
+              "guides/aup-ui",
+              "guides/testing"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "cli/overview",
+              "cli/commands"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "reference/afs-class",
+              "reference/provider-base",
+              "reference/entry-model",
+              "reference/operations",
+              "reference/error-types"
+            ]
+          },
+          {
+            "group": "Protocols",
+            "pages": [
+              "reference/afs-protocol",
+              "reference/aup-protocol",
+              "reference/conformance"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Unified path-based interface for any data source (files, databases, APIs, cloud services)",
+    "8 standard operations: read, write, list, delete, search, stat, explain, exec",
+    "Pluggable provider system with decorator-based routing (AFSBaseProvider)",
+    "Built-in providers: Filesystem, Git, JSON/YAML, TOML, SQLite, HTTP, MCP, UI",
+    "Agent UI Protocol (AUP) — render web pages from declarative JSON node trees",
+    "MCP (Model Context Protocol) integration for Claude, Cursor, and other AI tools",
+    "CLI tool (afs) for interactive exploration and serving over HTTP or MCP-stdio",
+    "Language-agnostic conformance test suite for cross-language implementations",
+    "Mount-based composition — combine multiple providers into a single namespace",
+    "Transport-agnostic protocol — same semantics over HTTP, WebSockets, or in-process"
+  ],
+  "publicApiSurface": [
+    "AFS class (mount, read, write, list, delete, search, stat, explain, exec)",
+    "AFSBaseProvider (extend to build custom providers)",
+    "@Read, @Write, @List, @Delete, @Search, @Stat, @Explain, @Actions.Exec decorators",
+    "AFSFS — local filesystem provider (@aigne/afs-fs)",
+    "AFSGit — Git repository provider (@aigne/afs-git)",
+    "AFSJSON — JSON/YAML virtual directory provider (@aigne/afs-json)",
+    "AFSToml — TOML virtual directory provider (@aigne/afs-toml)",
+    "AFSSQLite — SQLite database provider (@aigne/afs-sqlite)",
+    "AFSHttp — HTTP/REST server provider (@aigne/afs-http)",
+    "AFSMcp — MCP server bridge provider (@aigne/afs-mcp)",
+    "AFSUI — Agent UI Protocol renderer provider (@aigne/afs-ui)",
+    "runProviderTests — conformance test framework (@aigne/afs-testing)",
+    "AUP node types: text, view, action, input, table, media (@aigne/afs-aup)",
+    "afs CLI commands: mount, ls, read, search, serve"
+  ]
+}

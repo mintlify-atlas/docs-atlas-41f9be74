@@ -1,0 +1,380 @@
+---
+title: "AFSBaseProvider: build custom providers"
+description: "Reference for AFSBaseProvider — the abstract base class, decorator API, RouteContext type, and lifecycle hooks for implementing custom AFS providers."
+---
+
+`AFSBaseProvider` is the abstract base class you extend to build a custom AFS provider. It implements the full `AFSModule` interface and wires up a path-based router automatically. You annotate methods with decorators such as `@Read`, `@Write`, and `@List`, and the base class dispatches incoming operations to the correct handler based on the request path.
+
+## Class declaration
+
+```typescript
+import { AFSBaseProvider } from "@aigne/afs";
+
+abstract class AFSBaseProvider implements AFSModule {
+  abstract readonly name: string;
+  readonly accessMode: AFSAccessMode = "readonly";
+  readonly visibility: AFSVisibility = "full";
+  actionPolicy?: ActionPolicy;
+  sensitiveFields?: string[];
+  sensitivity?: "full" | "redacted";
+  blockedActions?: string[];
+  allowedActions?: string[];
+}
+```
+
+## Abstract properties
+
+<ParamField body="name" type="string" required>
+  Unique provider name used for mount conflict detection and event routing. Must be unique among mounted providers.
+</ParamField>
+
+## Inherited properties
+
+<ParamField body="accessMode" type='"readonly" | "create" | "append" | "readwrite"'>
+  Controls which write operations are permitted. Defaults to `"readonly"`. Write-side methods (`write`, `delete`, `exec`, `rename`) throw `AFSReadonlyError` if the mode does not allow them.
+</ParamField>
+
+<ParamField body="visibility" type='"full" | "meta"'>
+  Controls content visibility. `"meta"` mode causes `read()` to return metadata only and denies `search()`. Defaults to `"full"`.
+</ParamField>
+
+<ParamField body="actionPolicy" type='"safe" | "standard" | "full"'>
+  Restricts which action severity levels the provider allows via `exec`. `"safe"` = ambient only; `"standard"` = ambient + boundary; `"full"` = all levels. Unset means no enforcement.
+</ParamField>
+
+<ParamField body="sensitiveFields" type="string[]">
+  Field names to mask when `sensitivity` is `"redacted"`. Values matching these keys are replaced with `"[REDACTED]"` in `read()` and `list()` responses.
+</ParamField>
+
+<ParamField body="sensitivity" type='"full" | "redacted"'>
+  Masking mode for sensitive fields. Defaults to `"redacted"`.
+</ParamField>
+
+<ParamField body="blockedActions" type="string[]">
+  Action names always blocked regardless of `allowedActions` or severity. Security invariant: blocked wins.
+</ParamField>
+
+<ParamField body="allowedActions" type="string[]">
+  Action names that skip severity checks (but `blockedActions` still wins).
+</ParamField>
+
+## Lifecycle methods
+
+### setEventSink
+
+Injected automatically by `AFS.mount()` and `AFS.unmount()`. Providers should not call this directly.
+
+```typescript
+setEventSink(sink: AFSEventSink | null): void
+```
+
+### setSecretCapability
+
+Injected by `AFS.mount()` when a vault provider is mounted and the provider declares `secrets` in its manifest.
+
+```typescript
+setSecretCapability(cap: SecretCapability | null): void
+```
+
+### emit (protected)
+
+Emit an event to the AFS event bus. The mount path is automatically prefixed. Silent no-op when not mounted.
+
+```typescript
+protected emit(event: {
+  type: string;
+  path: string;
+  data?: Record<string, unknown>;
+}): void
+```
+
+### secretCapability (protected getter)
+
+Scoped, read-only access to vault secrets declared in the provider manifest. Returns `null` when no vault is mounted.
+
+```typescript
+protected get secretCapability(): SecretCapability | null
+```
+
+## Route decorators
+
+Decorators register handler methods with the provider's internal router. All decorators take a **path pattern** as their first argument, which may include named parameters (`:param`) and wildcards (`:param*`).
+
+### @Read
+
+Handle `read` operations. The handler receives a `RouteContext` and must return `Promise<AFSEntry | undefined>`.
+
+```typescript
+export const Read: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Read("/:id")
+async getItem(ctx: RouteContext<{ id: string }>): Promise<AFSEntry> {
+  return { id: ctx.params.id, path: ctx.path, content: await this.fetchItem(ctx.params.id) };
+}
+```
+
+### @Write
+
+Handle `write` operations. The handler receives a `RouteContext` and an `AFSWriteEntryPayload`, and must return `Promise<AFSWriteResult>`.
+
+```typescript
+export const Write: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Write("/:id")
+async updateItem(ctx: RouteContext<{ id: string }>, content: AFSWriteEntryPayload): Promise<AFSWriteResult> {
+  const saved = await this.saveItem(ctx.params.id, content);
+  return { data: saved };
+}
+```
+
+### @List
+
+Handle `list` operations. The handler must return `Promise<ListHandlerResult>` (containing `data: AFSEntry[]`). By default the base class performs BFS depth expansion for you; set `{ handleDepth: true }` to manage depth recursion yourself.
+
+```typescript
+export function List(
+  pattern: string,
+  optionsOrDescription?: string | ListDecoratorOptions
+): MethodDecorator;
+```
+
+<ParamField body="optionsOrDescription" type="string | ListDecoratorOptions">
+  Either a description string or a `ListDecoratorOptions` object. The only option is `handleDepth: boolean` (default `false`).
+</ParamField>
+
+```typescript
+@List("/")
+async listRoot(ctx: RouteContext): Promise<ListHandlerResult> {
+  return { data: await this.getAllItems() };
+}
+
+// S3-style: handler manages depth itself
+@List("/**", { handleDepth: true })
+async listDeep(ctx: RouteContext): Promise<ListHandlerResult> {
+  return { data: await this.listRecursive(ctx.path, ctx.options?.maxDepth) };
+}
+```
+
+### @Delete
+
+Handle `delete` operations. Returns `Promise<AFSDeleteResult>`.
+
+```typescript
+export const Delete: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Delete("/:id")
+async deleteItem(ctx: RouteContext<{ id: string }>): Promise<AFSDeleteResult> {
+  await this.removeItem(ctx.params.id);
+  return { message: "Deleted" };
+}
+```
+
+### @Search
+
+Handle `search` operations. The handler receives `RouteContext`, the query string, and optional `AFSSearchOptions`.
+
+```typescript
+export const Search: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Search("/")
+async searchItems(
+  ctx: RouteContext,
+  query: string,
+  options?: AFSSearchOptions
+): Promise<AFSSearchResult> {
+  return { data: await this.findItems(query) };
+}
+```
+
+### @Stat
+
+Handle `stat` operations. Returns `Promise<AFSStatResult>`.
+
+```typescript
+export const Stat: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Stat("/:path*")
+async statPath(ctx: RouteContext<{ path?: string }>): Promise<AFSStatResult> {
+  const meta = await this.getMeta(ctx.path);
+  return { data: { id: ctx.path, path: ctx.path, meta } };
+}
+```
+
+### @Explain
+
+Handle `explain` operations. Returns `Promise<AFSExplainResult>`.
+
+```typescript
+export const Explain: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Explain("/")
+async explainRoot(ctx: RouteContext): Promise<AFSExplainResult> {
+  return { format: "markdown", content: "## My Provider\nProvides access to …" };
+}
+```
+
+### @Actions (listing)
+
+Register a handler that lists actions available on a node. Automatically appends `/.actions` to the pattern. Returns `Promise<ListHandlerResult>`.
+
+```typescript
+export const Actions: (pattern: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+@Actions("/:id")
+async listActions(ctx: RouteContext<{ id: string }>): Promise<ListHandlerResult> {
+  return { data: [{ id: "lock", path: `${ctx.path}/.actions/lock`, summary: "Lock item" }] };
+}
+```
+
+### @Actions.Exec
+
+Register an action handler. If `actionName` is provided, the pattern is `{basePath}/.actions/{actionName}`; otherwise it is a catch-all `{basePath}/.actions/:action`.
+
+```typescript
+Actions.Exec: (pattern: string, actionName?: string, description?: string) => MethodDecorator;
+```
+
+```typescript
+// Specific action
+@Actions.Exec("/issues/:number", "close", "Close an issue")
+async closeIssue(
+  ctx: RouteContext<{ number: string }>,
+  args: Record<string, unknown>
+): Promise<AFSExecResult> {
+  return { success: true, data: { closed: true } };
+}
+
+// Catch-all action
+@Actions.Exec("/issues/:number")
+async handleIssueAction(
+  ctx: RouteContext<{ number: string; action: string }>,
+  args: Record<string, unknown>
+): Promise<AFSExecResult> {
+  return { success: true, data: { action: ctx.params.action } };
+}
+```
+
+### @Meta
+
+Register a read handler for the `/.meta` introspection path. Automatically appends `/.meta` to the pattern.
+
+```typescript
+export function Meta(pattern: string, description?: string): MethodDecorator;
+```
+
+```typescript
+@Meta("/")
+async getRootMeta(ctx: RouteContext): Promise<AFSEntry> {
+  return { id: "meta", path: "/.meta", content: { schema: mySchema } };
+}
+```
+
+## RouteContext
+
+All route handlers receive a `RouteContext` as their first argument.
+
+```typescript
+interface RouteContext<TParams = Record<string, string | undefined>> {
+  path: string;
+  params: TParams;
+  options?: RouteOptions;
+  context?: AFSContext;
+}
+```
+
+<ResponseField name="path" type="string">
+  The full normalized request path (e.g., `/items/42`).
+</ResponseField>
+
+<ResponseField name="params" type="TParams">
+  Parameters extracted from the route pattern (e.g., `{ id: "42" }` for pattern `/:id`). Wildcard params (`:param*`) may be `undefined` for root paths — always check.
+</ResponseField>
+
+<ResponseField name="options" type="RouteOptions | undefined">
+  The operation options passed by the caller. Type depends on operation: `AFSListOptions`, `AFSReadOptions`, `AFSWriteOptions`, etc.
+</ResponseField>
+
+<ResponseField name="context" type="AFSContext | undefined">
+  Execution context lifted from `options.context`. Contains optional `userId`, `sessionId`, `requestId`, `logger`, and `afs` root reference.
+</ResponseField>
+
+## Utility methods (protected)
+
+### normalizePath
+
+Normalize a path: ensures leading slash, resolves `..`, collapses duplicate slashes, rejects whitespace-only segments.
+
+```typescript
+protected normalizePath(path: string): string
+```
+
+### joinPath
+
+Join path segments using `/`.
+
+```typescript
+protected joinPath(...segments: string[]): string
+```
+
+### buildEntry
+
+Convenience helper to construct a valid `AFSEntry` object.
+
+```typescript
+protected buildEntry(
+  path: string,
+  options?: {
+    id?: string;
+    content?: unknown;
+    meta?: Partial<AFSEntryMetadata>;
+    createdAt?: Date;
+    updatedAt?: Date;
+  }
+): AFSEntry
+```
+
+## Minimal provider example
+
+```typescript
+import { AFSBaseProvider, List, Read } from "@aigne/afs";
+import type { RouteContext, ListHandlerResult, AFSEntry } from "@aigne/afs";
+
+export class NotesProvider extends AFSBaseProvider {
+  readonly name = "notes";
+  readonly accessMode = "readwrite" as const;
+
+  @List("/")
+  async listNotes(ctx: RouteContext): Promise<ListHandlerResult> {
+    return {
+      data: [{ id: "hello", path: "/hello.md", meta: { childrenCount: undefined } }],
+    };
+  }
+
+  @Read("/:slug")
+  async readNote(ctx: RouteContext<{ slug: string }>): Promise<AFSEntry> {
+    return {
+      id: ctx.params.slug,
+      path: ctx.path,
+      content: `# ${ctx.params.slug}`,
+    };
+  }
+}
+```
+
+<Tip>
+  Providers with `childrenCount: undefined` in their meta are treated as leaf nodes (no children). Use `childrenCount: -1` to signal that children exist but the count is unknown (lazy loading).
+</Tip>

@@ -1,0 +1,156 @@
+---
+title: "AFS CLI: explore and serve from the terminal"
+description: "Install @aigne/afs-cli to list, read, search, and serve your AFS providers interactively or over HTTP and MCP from the command line."
+---
+
+The AFS CLI (`afs`) is a command-line interface that brings the full AFS namespace to your terminal. You can explore mounted providers interactively, read and write files, search for content, start an HTTP server to expose AFS over a REST API, or launch an MCP server so AI tools like Claude and Cursor can access all your data sources through a single entry point.
+
+## Installation
+
+Install the CLI globally so the `afs` binary is available in your `PATH`:
+
+```bash
+npm install -g @aigne/afs-cli
+```
+
+Or with pnpm:
+
+```bash
+pnpm add -g @aigne/afs-cli
+```
+
+Verify the installation:
+
+```bash
+afs --version
+```
+
+## Configuration
+
+The CLI reads mount configuration from a `.afs-config/config.toml` file. AFS searches for this file starting from the current directory and walking up toward the home directory, so you can have project-level and user-level configurations.
+
+<Steps>
+  <Step title="Create the config directory">
+    ```bash
+    mkdir -p .afs-config
+    ```
+  </Step>
+  <Step title="Add your first mount">
+    ```toml
+    # .afs-config/config.toml
+    [[mounts]]
+    path = "/src"
+    uri = "fs:///Users/you/project/src"
+    description = "Project source code"
+    ```
+  </Step>
+  <Step title="Verify the mount">
+    ```bash
+    afs ls /src
+    ```
+  </Step>
+</Steps>
+
+Config files are resolved in priority order — highest wins:
+
+```
+~/.afs-config/config.toml            # user-level (lowest priority)
+<project>/.afs-config/config.toml   # project-level
+<subdir>/.afs-config/config.toml    # subdirectory-level (highest priority)
+```
+
+## Key use cases
+
+<CardGroup cols={2}>
+  <Card title="Interactive exploration" icon="terminal">
+    Run `afs -i` or `afs --interactive` to open the interactive REPL. Navigate the namespace with `cd`, use Tab completion, and run any `afs` command without the `afs` prefix.
+  </Card>
+  <Card title="HTTP server" icon="server">
+    Run `afs serve` to expose all mounted providers as a REST API over HTTP. Useful for sharing a local AFS instance with other processes or team members.
+  </Card>
+  <Card title="MCP server" icon="robot">
+    Run `afs serve --transport mcp-stdio` to expose your AFS namespace as an MCP tool server. Connect it to Claude, Cursor, or any MCP-compatible AI assistant.
+  </Card>
+  <Card title="Terminal UI explorer" icon="layout-dashboard">
+    Run `afs explore` for a full-screen TUI that lets you browse the namespace visually, or `afs explore --web` to open a browser-based explorer.
+  </Card>
+</CardGroup>
+
+## Quick examples
+
+Mount a local directory and read a file:
+
+```bash
+afs mount add /src fs:///path/to/project
+afs read /src/README.md
+```
+
+List directory contents with the long format:
+
+```bash
+afs ls /src -l
+```
+
+Search for a pattern across a mount:
+
+```bash
+afs search /src "TODO"
+```
+
+Start an interactive REPL session:
+
+```bash
+afs --interactive
+```
+
+Start an HTTP server on a custom port:
+
+```bash
+afs serve --port 8080
+```
+
+Expose AFS as an MCP server over stdio (for AI tool integration):
+
+```bash
+afs serve --transport mcp-stdio
+```
+
+## Output formats
+
+Every command supports structured output flags that let you control how results are presented:
+
+| Flag | Description |
+|------|-------------|
+| _(none)_ | Default format — one path per line, pipe-safe |
+| `--json` | Structured JSON output |
+| `--yaml` | Structured YAML output |
+| `--view=llm` | Semantic facts, token-efficient (optimized for AI agents) |
+| `--view=human` | Tree structure with icons, optimized for human reading |
+
+Example — list a directory as JSON for programmatic use:
+
+```bash
+afs ls /src --json
+```
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General error |
+| `2` | Argument error |
+| `3` | Resource not found |
+| `4` | Permission denied |
+| `5` | Runtime error |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Command reference" icon="book-open" href="/cli/commands">
+    Full reference for every command, subcommand, and flag.
+  </Card>
+  <Card title="Providers overview" icon="plug" href="/providers/overview">
+    Learn which URI schemes you can mount with `afs mount add`.
+  </Card>
+</CardGroup>

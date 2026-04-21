@@ -1,0 +1,79 @@
+---
+title: "AFS: virtual filesystem for AI agents"
+description: "AFS (Agentic File System) maps any data source to a path — databases, APIs, local files, Git repos — and exposes it through 8 standard operations."
+---
+
+AFS (Agentic File System) is a virtual filesystem abstraction for AI agents. Inspired by the Unix "everything is a file" philosophy, AFS extends this idea to **"everything is context"** — databases, APIs, cloud services, and local files all become paths that an agent can `read`, `write`, `list`, `search`, and act on through a single consistent interface.
+
+## The "everything is context" philosophy
+
+Traditional filesystems give programs a uniform way to read and write bytes. AFS does the same for agents, but the content behind a path is not limited to bytes on disk. A path like `/git/main/src/index.ts` might resolve to a file in a Git repository. `/db/users/42` might resolve to a row in a SQLite database. `/ui/web/sessions/abc/tree` might send a rendered page to a browser.
+
+The agent uses the same eight operations — `read`, `write`, `list`, `delete`, `search`, `stat`, `explain`, `exec` — regardless of what is behind the path. Providers handle the translation. The agent only needs to know the path.
+
+## Architecture
+
+AFS Core sits between the agent and every data source. Providers plug in at mount paths, and AFS routes every operation to the right provider.
+
+```
+                    ┌─────────────────────────────┐
+                    │     Agent / Application      │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │      AFS Core                 │
+                    │  mount · route · read · write │
+                    │  list · search · stat · exec  │
+                    └──┬─────┬─────┬─────┬─────┬───┘
+                       │     │     │     │     │
+           ┌───────┐ ┌─┴──┐ ┌┴───┐ ┌┴──┐ ┌────┴────┐
+           │  FS   │ │Git │ │JSON│ │SQL│ │  AFS-UI  │  ← providers
+           │       │ │    │ │    │ │   │ │          │
+           │ local │ │repo│ │tree│ │ db│ │ AUP tree │
+           │ disk  │ │    │ │    │ │   │ │→ browser │
+           └───────┘ └────┘ └────┘ └───┘ └─────────┘
+```
+
+## The three components
+
+This repository contains three interconnected components that together give agents both filesystem-style data access and a way to render UI.
+
+<CardGroup cols={3}>
+  <Card title="AFS Core" icon="database" href="/concepts">
+    The virtual filesystem layer. Mount any provider at any path, route operations, and compose a unified namespace. Package: `@aigne/afs`.
+  </Card>
+  <Card title="AFS-UI" icon="display" href="/guides/aup-ui">
+    An AFS provider that exposes browser sessions as paths. Write an AUP tree to a session path and the browser renders it. No separate UI SDK required. Package: `@aigne/afs-ui`.
+  </Card>
+  <Card title="AUP" icon="sitemap" href="/guides/aup-ui">
+    Agent UI Protocol — the declarative JSON node tree that AFS-UI renders. Typed nodes (`text`, `view`, `action`, `input`, `table`, `media`) describe what to show, not how. Package: `@aigne/afs-aup`.
+  </Card>
+</CardGroup>
+
+## The 8 standard operations
+
+Every provider exposes the same operations. The implementation behind each path varies, but the interface does not.
+
+| Operation | What it does | Example |
+|-----------|-------------|---------|
+| `read` | Read an entry's content | `afs.read("/code/src/index.ts")` |
+| `write` | Create or update content | `afs.write("/code/out.txt", { content: "..." })` |
+| `list` | List directory contents | `afs.list("/code/src")` |
+| `delete` | Remove an entry | `afs.delete("/code/tmp.txt")` |
+| `search` | Find content by query | `afs.search("/code", "TODO")` |
+| `stat` | Get metadata without content | `afs.stat("/code/data.csv")` |
+| `explain` | Get human/LLM-readable docs | `afs.explain("/db")` |
+| `exec` | Execute a provider action | `afs.exec("/db/.actions/query", { sql: "SELECT..." })` |
+
+## Use cases for AI agents
+
+AFS is designed for scenarios where an agent needs to read, modify, or act on multiple heterogeneous data sources in a single session.
+
+- **Code analysis** — mount a local filesystem and a Git repository side by side; the agent reads files, searches for patterns, and reads commit history through the same path-based API.
+- **Data pipelines** — mount a SQLite database and a cloud storage provider; the agent queries rows via `exec` and writes results to object storage via `write`.
+- **Agent UI** — mount AFS-UI and write AUP trees to session paths; the browser renders the UI and sends events back as `exec` calls.
+- **MCP integration** — expose the entire AFS namespace to Claude, Cursor, or any MCP-compatible tool with one command: `afs serve --transport mcp-stdio`.
+
+<Note>
+  AFS uses a Business Source License 1.1. It is free to use for any purpose except as a competing managed service, and converts to Apache 2.0 on 2030-03-07.
+</Note>

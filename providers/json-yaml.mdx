@@ -1,0 +1,180 @@
+---
+title: "@aigne/afs-json: navigate JSON/YAML as a filesystem"
+description: "Mount a JSON or YAML file as a virtual directory tree — objects become directories, primitives become leaf nodes you can read and write individually."
+---
+
+`@aigne/afs-json` loads a single JSON or YAML file and exposes its structure as an AFS path tree. JSON objects and arrays become directories; primitive values (strings, numbers, booleans, nulls) become leaf files you can read, write, search, and delete by path. Changes are automatically serialised back to the source file.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-json
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSJSON } from "@aigne/afs-json";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSJSON({ jsonPath: "./config.json" }),
+  "/config",
+);
+
+// List top-level keys
+const { data } = await afs.list("/config");
+
+// Read a nested value
+const result = await afs.read("/config/database/host");
+console.log(result.data?.content);  // e.g. "localhost"
+
+// Write a new value
+await afs.write("/config/database/port", { content: 5432 });
+
+// Search across all values
+const hits = await afs.search("/config", "production");
+```
+
+## How JSON maps to the filesystem
+
+Given a file `app.yaml`:
+
+```yaml
+database:
+  host: localhost
+  port: 5432
+  name: mydb
+features:
+  - name: dark-mode
+    enabled: true
+  - name: beta-ui
+    enabled: false
+```
+
+The virtual tree looks like this:
+
+```
+/                         ← the root object (directory)
+├── database/             ← nested object (directory)
+│   ├── host              ← "localhost"  (leaf file)
+│   ├── port              ← 5432         (leaf file)
+│   └── name              ← "mydb"       (leaf file)
+└── features/             ← array (directory, indexed by position)
+    ├── 0/
+    │   ├── name           ← "dark-mode"
+    │   └── enabled        ← true
+    └── 1/
+        ├── name           ← "beta-ui"
+        └── enabled        ← false
+```
+
+<Note>
+  The `.afs` key is reserved for internal metadata storage and is hidden from all listings. Never use it as a key in your own data.
+</Note>
+
+## Constructor options
+
+```typescript
+interface AFSJSONOptions {
+  /** Path to the JSON or YAML file (required). */
+  jsonPath: string;
+  /** Mount name (defaults to the filename without extension). */
+  name?: string;
+  /** Human-readable description for agents. */
+  description?: string;
+  /** "readonly" or "readwrite". Default: "readwrite". */
+  accessMode?: "readonly" | "readwrite";
+  /** Enable agent-skill scanning. Defaults accessMode to "readonly". */
+  agentSkills?: boolean;
+}
+```
+
+The file format is detected from the extension (`.yaml` / `.yml` → YAML, anything else → JSON). If the file does not yet exist it is created as an empty `{}` object.
+
+## YAML support
+
+Both JSON and YAML files work identically. Point `jsonPath` at a `.yaml` or `.yml` file and the provider handles the rest. Writes are serialised back in the original format.
+
+```typescript
+await afs.mount(
+  new AFSJSON({ jsonPath: "./docker-compose.yaml" }),
+  "/compose",
+);
+
+const services = await afs.list("/compose/services");
+const image = await afs.read("/compose/services/api/image");
+```
+
+## Operations
+
+### list
+
+Returns immediate children of an object or array node.
+
+```typescript
+const { data } = await afs.list("/config/database");
+// [{ path: "/config/database/host", meta: { kind: "json:value" } }, ...]
+```
+
+Node kinds: `json:object`, `json:array`, `json:value`.
+
+### read
+
+Reads a leaf value as content, or returns an object/array node's metadata.
+
+```typescript
+const { data } = await afs.read("/config/database/host");
+console.log(data?.content);   // "localhost"
+console.log(data?.meta?.kind); // "json:value"
+```
+
+### write
+
+Sets a value at any path. Intermediate objects are created automatically.
+
+```typescript
+// Update an existing value
+await afs.write("/config/database/port", { content: 5433 });
+
+// Create a new nested key
+await afs.write("/config/cache/ttl", { content: 3600 });
+
+// Replace an entire object
+await afs.write("/config/logging", {
+  content: { level: "info", format: "json" },
+});
+```
+
+### search
+
+Recursively searches all leaf values for a matching substring.
+
+```typescript
+const { data } = await afs.search("/config", "localhost");
+// Returns all leaf nodes whose string representation contains "localhost"
+```
+
+### delete
+
+Removes a key from its parent object, or an element from an array.
+
+```typescript
+await afs.delete("/config/deprecated-key");
+await afs.delete("/config/features/1");  // removes array element at index 1
+```
+
+### stat
+
+Returns metadata without content.
+
+```typescript
+const { data } = await afs.stat("/config/database");
+// data.meta.childrenCount — number of keys in the object
+```
+
+## Metadata storage
+
+User-defined metadata written via `payload.meta` is stored inline in the JSON/YAML file under a hidden `.afs` key, mirroring the same convention used by `@aigne/afs-fs`. These keys are always filtered out of listings and reads.

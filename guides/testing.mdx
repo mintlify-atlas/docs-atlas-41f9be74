@@ -1,0 +1,304 @@
+---
+title: "Test AFS providers with the conformance test suite"
+description: "Validate AFS providers with @aigne/afs-testing — 21 test suites for structure, operations, and security — plus language-agnostic YAML conformance."
+---
+
+AFS ships two complementary testing tools. `@aigne/afs-testing` is a TypeScript framework that runs your provider through a battery of structured tests using `bun:test`. The `conformance/` runner is a language-agnostic YAML-driven harness that validates **any** AFS implementation — Swift, Go, Kotlin, Rust, or TypeScript — by communicating over HTTP.
+
+## @aigne/afs-testing
+
+### Installation
+
+```bash
+npm install --save-dev @aigne/afs-testing
+```
+
+### runProviderTests()
+
+Call `runProviderTests()` inside a `describe` block. Pass a fixture that describes your provider and its data shape:
+
+```typescript
+import { describe } from "bun:test";
+import { runProviderTests } from "@aigne/afs-testing";
+import { MyProvider } from "../src/index.js";
+
+describe("MyProvider Conformance", () => {
+  runProviderTests({
+    name: "MyProvider",
+    createProvider: () => new MyProvider({ /* options */ }),
+
+    // Declare the data structure the provider exposes
+    structure: {
+      root: {
+        name: "",
+        children: [
+          { name: "hello.txt", content: "Hello, World!" },
+          {
+            name: "docs",
+            children: [
+              { name: "readme.md", content: "# Readme" },
+            ],
+          },
+        ],
+      },
+    },
+
+    // Required: setup function for the playground environment
+    playground: async (tempDir) => ({
+      name: "MyProvider",
+      mountPath: "/my",
+      provider: new MyProvider({ basePath: tempDir }),
+      cleanup: async () => { /* teardown */ },
+    }),
+  });
+});
+```
+
+Run it with:
+
+```bash
+bun test
+```
+
+### Fixture options
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Human-readable name for test output |
+| `createProvider` | `() => T \| Promise<T>` | Yes | Factory that returns a fresh provider instance |
+| `structure` | `TestDataStructure` | Yes | Tree describing the provider's data shape |
+| `playground` | `(tempDir) => Promise<PlaygroundSetup>` | Yes | Setup function for the playground environment |
+| `writeCases` | `WriteTestCase[]` | No | Custom write operation test cases |
+| `actionCases` | `ActionTestCase[]` | No | Custom action (exec) test cases |
+| `deleteCases` | `DeleteTestCase[]` | No | Custom delete test cases |
+| `executeCases` | `ExecuteTestCase[]` | No | Custom execute test cases for executable nodes |
+| `expectWriteModes` | `boolean \| string` | No | Enable all write-mode tests (replace, append, prepend, create, update, patch) |
+| `expectResources` | `boolean` | No | Verify provider declares resources in capabilities manifest |
+| `expectUsage` | `boolean` | No | Verify exec results carry token/cost/duration metadata |
+| `events` | `Array<{type, description?}>` | No | Event types the provider should declare |
+| `perception` | `{readme?, entries?}` | No | Validate `.perception/` implicit path support |
+| `aup` | `{path?, variants}` | No | Validate `.aup/` recipe support |
+| `providerClass` | `{manifest?(), treeSchema?()}` | No | Provider class for static manifest/tree schema validation |
+| `config` | `TestConfig` | No | Test options (e.g. `timeout` in ms) |
+
+### The 21 test suites
+
+`runProviderTests()` automatically runs the following suites for every provider:
+
+<Accordion title="Always-run suites">
+
+| Suite | What it checks |
+|-------|----------------|
+| `PlaygroundExistence` | The `playground` setup function is provided |
+| `StructureValidation` | Provider data matches the declared `structure` tree |
+| `ReadOperations` | `read` returns correct content and `AFSEntry` shape |
+| `SearchOperations` | `search` returns matching entries with correct metadata |
+| `MetaOperations` | `.meta` paths return provider metadata |
+| `ExplainOperations` | `explain` returns descriptions for root and sub-paths |
+| `AccessModeValidation` | Write/delete are blocked if provider is `readonly` |
+| `ErrorTypesValidation` | Errors are typed `AFSError` subclasses with correct codes |
+| `EntryFieldsValidation` | `AFSEntry` fields (`id`, `path`, `meta`) are present |
+| `ListOptionsValidation` | `limit`, `offset`, `pattern`, `maxDepth` work correctly |
+| `PathNormalizationValidation` | Trailing slashes and double slashes are handled |
+| `DeepListValidation` | Recursive `list` with `maxDepth > 1` works |
+| `NoHandlerValidation` | Unhandled paths throw `AFSNotFoundError` |
+| `RouteParamsValidation` | Parameterized routes (`/:id`) resolve correctly |
+| `MetadataRichnessValidation` | `meta.description` is present on key entries |
+| `ExplainExistenceValidation` | `explain` doesn't throw for any listed path |
+| `CapabilitiesOperationsValidation` | `explain` returns correct operations list |
+| `PathTraversalSecurity` | `../` paths are rejected |
+| `AccessBoundarySecurity` | Paths outside the mount root are blocked |
+| `ResourceExhaustionSecurity` | Oversized inputs are handled gracefully |
+| `InputInjectionSecurity` | Injection payloads in content don't escape |
+| `SensitiveLeakSecurity` | `sensitiveFields` values are redacted |
+| `ErrorInfoLeakSecurity` | Error messages don't expose internal details |
+
+</Accordion>
+
+<Accordion title="Conditional suites">
+
+These run only when you opt in via the corresponding fixture field:
+
+| Suite | Activated by |
+|-------|-------------|
+| `ExecuteOperations` | `executeCases` provided |
+| `ActionOperations` | `actionCases` provided |
+| `WriteCaseOperations` | `writeCases` provided |
+| `DeleteCaseOperations` | `deleteCases` provided |
+| `WriteModesValidation` | `expectWriteModes: true` |
+| `CapabilitiesResourceValidation` | `expectResources: true` |
+| `ExecUsageMetadataValidation` | `expectUsage: true` + `executeCases` |
+| `EventDeclarationValidation` | `events` provided |
+| `PerceptionPathValidation` | `perception` provided |
+| `AupRecipeValidation` | `aup` provided |
+| `SecurityManifestValidation` | `providerClass` provided |
+| `TreeSchemaValidation` | `providerClass` provided |
+| `SymlinkEscapeSecurity` | `providerClass` provided |
+
+</Accordion>
+
+### Custom test cases
+
+#### Write cases
+
+```typescript
+writeCases: [
+  {
+    name: "creates a new file",
+    path: "/output/new-file.txt",
+    payload: { content: "hello" },
+    options: { mode: "create" },
+    expected: { content: "hello" },
+  },
+  {
+    name: "appends to existing file",
+    path: "/hello.txt",
+    payload: { content: " World" },
+    options: { mode: "append" },
+    expected: { contentContains: "World" },
+  },
+]
+```
+
+#### Action cases
+
+```typescript
+actionCases: [
+  {
+    name: "query returns rows",
+    path: "/.actions/query",
+    args: { sql: "SELECT 1 AS n" },
+    expected: { success: true },
+  },
+]
+```
+
+#### Execute cases
+
+```typescript
+executeCases: [
+  {
+    name: "echo tool returns input",
+    path: "/tools/echo",
+    args: { message: "hello" },
+    expected: { contains: { message: "hello" } },
+  },
+]
+```
+
+#### Delete cases
+
+```typescript
+deleteCases: [
+  {
+    name: "removes a file",
+    path: "/hello.txt",
+    verifyDeleted: true,
+  },
+]
+```
+
+---
+
+## Language-agnostic conformance runner
+
+The `conformance/` directory contains a YAML-driven test runner that validates **any** HTTP-based AFS implementation. It communicates entirely over the AFS HTTP protocol, making it language-neutral.
+
+### Test levels
+
+| Level | Tests | What it covers |
+|-------|-------|----------------|
+| **L1** | 24 tests | Filesystem protocol: read, list, stat, write, delete, search, error handling |
+| **L2** | 9+ tests | Integration: write-read cycles, delete verification, search-after-write, AUP sessions |
+| **L3** | 16 tests | Core routing: multi-mount routing, cross-mount isolation, root listing |
+| **L4** | 8 tests | Core explain: auto-explain generation, provider capabilities, stat-based fallback |
+| **L5** | 6 tests | Core security: exec guard, action policy enforcement, blocked/allowed actions |
+| **L6** | 3 tests | Change propagation: write/delete consistency, cross-mount search after mutation |
+
+### Running the conformance tests
+
+```bash
+cd conformance
+
+# Launch the TypeScript reference server automatically and run all levels
+npx tsx src/runner.ts --launch
+
+# Test against an already-running AFS HTTP server
+npx tsx src/runner.ts --url http://localhost:3000
+
+# Filter by level
+npx tsx src/runner.ts --launch --level l1   # L1 filesystem tests only
+npx tsx src/runner.ts --launch --level l3   # L3 core routing only
+
+# Filter by name pattern
+npx tsx src/runner.ts --launch --filter "read"
+```
+
+### YAML spec format
+
+Test specs are declarative YAML files in `conformance/specs/`:
+
+```yaml
+name: "read - existing text file"
+operation: read
+params:
+  path: "/hello.txt"
+expect:
+  success: true
+  data:
+    data:
+      content: "Hello, World!"
+      path: "$exists"
+      meta:
+        size:
+          gte: 1
+---
+name: "read - not found"
+operation: read
+params:
+  path: "/nonexistent.txt"
+expect:
+  success: false
+  error:
+    code: 1
+---
+name: "read - with line range"
+operation: read
+params:
+  path: "/lines.txt"
+  options:
+    startLine: 2
+    endLine: 4
+expect:
+  success: true
+  data:
+    data:
+      content: "$contains:line2"
+```
+
+Assertions support special matchers:
+
+| Matcher | Meaning |
+|---------|---------|
+| `"$exists"` | Value must be present and non-null |
+| `"$contains:text"` | String must contain `text` |
+| `{ gte: N }` | Numeric value must be ≥ N |
+| `{ lte: N }` | Numeric value must be ≤ N |
+
+### Testing a non-TypeScript implementation
+
+Point the runner at any HTTP server that speaks the AFS protocol:
+
+```bash
+# Start your Go/Rust/Swift AFS server on port 8080
+my-afs-server --port 8080
+
+# In another terminal, run the conformance suite against it
+npx tsx conformance/src/runner.ts --url http://localhost:8080 --level l1
+```
+
+The runner sends AFS HTTP requests for each spec and reports pass/fail with detailed diffs.
+
+<Note>
+  The conformance runner requires the implementation under test to have a fixture filesystem pre-loaded (files like `/hello.txt`, `/docs/readme.md`, etc.). The `--launch` flag auto-configures this for the TypeScript reference server. For other implementations, see `conformance/fixtures/` for the required fixture layout.
+</Note>

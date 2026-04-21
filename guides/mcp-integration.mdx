@@ -1,0 +1,201 @@
+---
+title: "Integrate AFS with MCP: serve and mount MCP servers"
+description: "Serve AFS over MCP so Claude Desktop, Cursor, and other AI tools can access all mounted providers, or mount external MCP servers into AFS as providers."
+---
+
+AFS and MCP (Model Context Protocol) integrate in two complementary directions. You can **serve** AFS as an MCP server so any MCP-compatible AI tool gains access to everything you've mounted. You can also go the other way and **mount** an existing MCP server into AFS, exposing its tools, prompts, and resources through AFS's path-based API.
+
+## Scenario 1 — Serve AFS as an MCP server
+
+### Quick start with the CLI
+
+The fastest path is the `@aigne/afs-cli` package:
+
+```bash
+npm install -g @aigne/afs-cli
+
+# Mount a local directory and serve it as MCP over stdio
+afs mount fs ./my-project --path /code
+afs serve --transport mcp-stdio
+```
+
+The `mcp-stdio` transport speaks the Model Context Protocol over stdin/stdout. Every mounted provider is exposed as a set of MCP tools — one tool per AFS operation (`read`, `list`, `search`, `exec`, etc.) scoped to each mount path.
+
+### Claude Desktop
+
+Add AFS to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "afs": {
+      "command": "afs",
+      "args": ["serve", "--transport", "mcp-stdio"],
+      "env": {}
+    }
+  }
+}
+```
+
+Claude will then be able to call `afs_read`, `afs_list`, `afs_search`, and other AFS operations directly from conversations.
+
+### Cursor
+
+In Cursor's MCP settings, add a new server:
+
+```json
+{
+  "name": "afs",
+  "command": "afs serve --transport mcp-stdio"
+}
+```
+
+### Windsurf / other MCP clients
+
+Any client that accepts a `stdio`-based MCP server can use AFS. The general pattern is to configure the client to launch `afs serve --transport mcp-stdio` as a subprocess. Consult your client's documentation for the exact config format.
+
+<Tip>
+  Run `afs serve --port 3000` instead to expose AFS over HTTP/REST. This is useful for debugging — you can `curl` any operation directly.
+</Tip>
+
+---
+
+## Scenario 2 — Mount an external MCP server into AFS
+
+Install the MCP provider package:
+
+```bash
+npm install @aigne/afs @aigne/afs-mcp
+```
+
+### Stdio transport (npx)
+
+The most common pattern — launch an MCP server as a child process:
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSMCP } from "@aigne/afs-mcp";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSMCP({
+    name: "filesystem",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@anthropic-ai/mcp-server-filesystem"],
+    env: { ALLOWED_PATHS: "/home/user/projects" },
+  }),
+  "/mcp/fs",
+);
+
+// List available tools
+const tools = await afs.list("/mcp/fs/tools");
+
+// Execute a tool by path
+const result = await afs.exec("/mcp/fs/tools/read_file", {
+  path: "/home/user/projects/README.md",
+});
+console.log(result.data);
+```
+
+### Stdio transport (uvx / Python)
+
+```typescript
+await afs.mount(
+  new AFSMCP({
+    name: "sqlite",
+    transport: "stdio",
+    command: "uvx",
+    args: ["mcp-server-sqlite", "--db-path", "./database.db"],
+  }),
+  "/mcp/db",
+);
+```
+
+### HTTP transport
+
+```typescript
+await afs.mount(
+  new AFSMCP({
+    name: "remote",
+    transport: "http",
+    url: "https://mcp.example.com/api",
+    headers: { Authorization: "Bearer your-token" },
+  }),
+  "/mcp/remote",
+);
+```
+
+### SSE transport
+
+```typescript
+await afs.mount(
+  new AFSMCP({
+    name: "realtime",
+    transport: "sse",
+    url: "https://mcp.example.com/sse",
+  }),
+  "/mcp/live",
+);
+```
+
+## Directory structure of a mounted MCP server
+
+When an MCP server is mounted, AFS maps its capabilities to a predictable path layout:
+
+```
+/mcp/{name}/
+  WORLD.md            ← Auto-generated capability overview
+  tools/
+    {tool-name}       ← Each tool as an executable entry
+  prompts/
+    {prompt-name}     ← Each prompt as a readable entry
+  {resource-path}/    ← Resources expanded as directories
+    {resource-id}
+```
+
+```typescript
+// Read the auto-generated WORLD.md for a full capability overview
+const world = await afs.read("/mcp/filesystem/WORLD.md");
+console.log(world.data?.content);
+
+// Read a tool's input schema
+const tool = await afs.read("/mcp/filesystem/tools/read_file");
+console.log(tool.data?.meta?.execute?.inputSchema);
+
+// Execute a tool
+const out = await afs.exec("/mcp/filesystem/tools/read_file", {
+  path: "/home/user/projects/README.md",
+});
+```
+
+## AFSMCP configuration options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | `string` | No | Module name and default mount path. Defaults to `"mcp"`. |
+| `description` | `string` | No | Human-readable description |
+| `transport` | `"stdio" \| "http" \| "sse"` | Yes | Transport type |
+| `command` | `string` | stdio only | Executable to launch (e.g. `"npx"`, `"uvx"`) |
+| `args` | `string[]` | No | Arguments to the command |
+| `env` | `Record<string, string>` | No | Extra environment variables |
+| `url` | `string` | http/sse | Server URL |
+| `headers` | `Record<string, string>` | No | HTTP headers (auth, etc.) |
+| `timeout` | `number` | No | Connection timeout in ms |
+| `maxReconnects` | `number` | No | Maximum reconnection attempts |
+
+## Accessing MCP metadata
+
+All entries from an MCP mount carry original MCP data in `entry.meta.mcp`:
+
+```typescript
+// Tool metadata
+const tool = await afs.read("/mcp/github/tools/create_issue");
+const schema = tool.data?.meta?.execute?.inputSchema;  // JSON Schema for inputs
+const mcpMeta = tool.data?.meta?.mcp;                  // Raw MCP tool definition
+
+// Prompt metadata
+const prompt = await afs.read("/mcp/github/prompts/summarize");
+const args = prompt.data?.meta?.arguments;             // Prompt argument list
+```

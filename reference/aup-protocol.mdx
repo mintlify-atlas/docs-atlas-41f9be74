@@ -1,0 +1,585 @@
+---
+title: "AUP: Agent UI Protocol specification and node model"
+description: "Complete reference for the Agent UI Protocol: node tree model, all 21 primitives, session lifecycle, patch operations, and device capabilities."
+keywords: ["aup", "agent ui protocol", "node tree", "primitives", "websocket", "session", "device capabilities"]
+---
+
+AUP (Agentic Universal Primitives) is a real-time protocol for agents to render interactive user interfaces. An agent constructs a **semantic node tree** — describing *what* to display, not *how* — and the client renders it according to device capabilities and theme.
+
+AUP runs over WebSocket as a sub-protocol of AFS. The agent (server) manages the node tree; the client renders it and sends user events back.
+
+## Design intent
+
+Traditional UI requires agents to generate HTML/CSS/JS for specific platforms. AUP inverts this: the agent describes intent ("show a text input and a submit button"), and the client renders it natively on web, terminal, mobile, or any future device.
+
+| Property | Description |
+|----------|-------------|
+| **Semantic, not visual** | Nodes define *what*; clients decide *how* |
+| **Atomic patching** | Incremental updates via patch operations |
+| **Device-adaptive** | Primitives degrade gracefully on limited devices |
+| **AFS-integrated** | Events dispatch as AFS `exec` calls; data binds via AFS paths |
+
+```
+Agent (server)                     Client (device)
+┌─────────────┐                    ┌─────────────┐
+│ AUP Session │◄── WebSocket ────►│  Renderer    │
+│  Logic      │                    │  (Web/TTY/   │
+│             │    render ────►    │   iOS/etc.)  │
+│  Node Store │    patch  ────►    │              │
+│             │    stage  ────►    │  Device Caps │
+│             │    take   ────►    │              │
+│             │◄── event          │              │
+└─────────────┘                    └─────────────┘
+```
+
+---
+
+## Node model
+
+### AUPNode
+
+A node is the atomic element of the UI tree.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique identifier across the entire tree |
+| `type` | string | Yes | Primitive type name |
+| `props` | Record\<string, unknown\> | No | Primitive-specific attributes |
+| `src` | string | No | AFS path — read-only data binding |
+| `bind` | string | No | AFS path — read-write data binding |
+| `state` | Record\<string, unknown\> | No | UI-local mutable state |
+| `events` | Record\<string, AUPEvent\> | No | Event bindings |
+| `children` | AUPNode[] | No | Child nodes |
+
+### AUPEvent
+
+Maps a user interaction to an AFS exec call.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `exec` | string | Yes | AFS path to execute |
+| `args` | Record\<string, unknown\> | No | Arguments passed to exec |
+
+### Data binding
+
+- **`src`** (read-only): client reads the AFS path and displays content. One-way binding.
+- **`bind`** (read-write): client reads and writes the AFS path. Changes from user input are written back automatically.
+
+<Warning>
+`src` and `bind` paths must not use the `javascript:` scheme or contain `..` path traversal sequences.
+</Warning>
+
+### Semantic tokens
+
+| Token | Values |
+|-------|--------|
+| `AUPVariant` | `primary`, `secondary`, `ghost`, `destructive` |
+| `AUPSize` | `xs`, `sm`, `md`, `lg`, `xl` |
+| `AUPIntent` | `info`, `success`, `warning`, `error` |
+
+### Universal props
+
+Available on all node types:
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `region` | string | Semantic region identifier |
+| `role` | string | Accessibility/semantic role |
+| `layout` | string | Spatial intent: `row`, `column`, `grid`, `stack`, `overlay-grid` |
+| `width` | string/number | Width constraint |
+| `maxWidth` | string/number | Maximum width |
+| `height` | string/number | Height constraint |
+| `flex` | number | Flex grow factor |
+| `gap` | string/number | Spacing between children |
+| `focusable` | boolean | Whether the node can receive keyboard/controller focus |
+| `focusOrder` | number | Explicit focus/tab order (auto-derived from layout if omitted) |
+| `accessibilityLabel` | string | Screen reader / voice control label |
+| `accessibilityHint` | string | Additional context for assistive technologies |
+| `accessibilityRole` | string | Override semantic role for accessibility tree |
+
+---
+
+## Primitive types
+
+AUP defines 17 built-in core primitives plus 4 additional primitives (21 total). Custom types are allowed — clients render them as `view` fallback.
+
+### Core primitives
+
+| Primitive | Description | Containable |
+|-----------|-------------|-------------|
+| `view` | Generic container | Yes |
+| `text` | Text display (markdown, rich text) | No |
+| `media` | Images, video, audio | No |
+| `input` | Text input, textarea, selects | No |
+| `action` | Buttons, links | No |
+| `overlay` | Modal, popover, toast, drawer | Yes |
+| `table` | Tabular data | No |
+| `time` | Timestamps, durations, countdowns | No |
+| `chart` | Data visualizations | No |
+| `map` | Geographic maps | No |
+| `calendar` | Date/event display | No |
+| `chat` | Chat/message interface | Yes |
+| `rtc` | Real-time communication (video/audio call) | No |
+| `explorer` | File/tree browser | No |
+| `editor` | Code/text editor | No |
+| `canvas` | Drawing/painting surface | No |
+| `afs-list` | AFS directory listing component | No |
+| `nav` | Navigation container (tabs, stack, present, menu, switcher) | Yes |
+
+### Additional primitives
+
+| Primitive | Description | Containable |
+|-----------|-------------|-------------|
+| `deck` | Slide/card deck — swipeable pages, presentation mode | Yes |
+| `ticker` | Real-time scrolling text or data feed | No |
+| `frame` | Embedded content frame (iframe-like sandboxed content) | No |
+| `broadcast` | Live stream or video broadcast | No |
+
+<AccordionGroup>
+  <Accordion title="deck props">
+    | Prop | Type | Description |
+    |------|------|-------------|
+    | `activeIndex` | number | Currently visible slide (0-based) |
+    | `autoplay` | boolean | Auto-advance slides |
+    | `interval` | number | Auto-advance interval (ms) |
+    | `loop` | boolean | Loop back to first slide after last |
+  </Accordion>
+  <Accordion title="ticker props">
+    | Prop | Type | Description |
+    |------|------|-------------|
+    | `items` | `{ label, value, trend? }[]` | Data items to scroll |
+    | `speed` | number | Scroll speed multiplier |
+    | `direction` | `"ltr"` \| `"rtl"` | Scroll direction |
+  </Accordion>
+  <Accordion title="frame props">
+    | Prop | Type | Description |
+    |------|------|-------------|
+    | `url` | string | Content URL to embed |
+    | `sandbox` | string | Sandbox permissions |
+    | `allowScripts` | boolean | Allow JavaScript execution |
+  </Accordion>
+  <Accordion title="broadcast props">
+    | Prop | Type | Description |
+    |------|------|-------------|
+    | `streamUrl` | string | Stream source URL |
+    | `live` | boolean | Whether the stream is live |
+    | `muted` | boolean | Start muted |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Navigation primitive
+
+The `nav` primitive supports five modes. Each mode maps to the platform's native navigation component.
+
+| Mode | Description |
+|------|-------------|
+| `tabs` | Switch between top-level sections; one tab active at a time |
+| `stack` | Push/pop navigation for drill-down flows |
+| `present` | Temporary overlay on top of current content |
+| `menu` | Action list triggered by user interaction |
+| `switcher` | Switch between multiple independent workspaces or windows |
+
+Nav nodes compose to model real application structures:
+
+```
+nav (mode: switcher)         ← desktop dock / mobile app tabs
+└── nav (mode: tabs)         ← app-level sections
+    └── nav (mode: stack)    ← section drill-down
+        └── view             ← actual page content
+```
+
+**Nav events:**
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `tabChange` | `{ tabId }` | User switched tabs |
+| `back` | `{}` | User triggered back navigation |
+| `dismiss` | `{}` | User dismissed a presentation |
+| `select` | `{ itemId }` | User selected a menu item |
+| `switcherChange` | `{ itemId }` | User switched workspaces |
+| `close` | `{ itemId }` | User closed a switcher item |
+
+**Platform mapping for `tabs` mode:**
+
+| Form factor | Native component |
+|-------------|-----------------|
+| Phone | UITabBarController / BottomNavigationView |
+| Tablet | Sidebar (iPadOS) / NavigationRail |
+| Desktop/Web | Side nav, top nav bar, or tab strip |
+| TV | Top tab bar with focus navigation |
+| Terminal | Numbered menu: `[1] Home  [2] Settings` |
+
+---
+
+## Session lifecycle
+
+### Connection handshake
+
+<Steps>
+  <Step title="Client connects via WebSocket">
+    The client opens a WebSocket connection to the AFS server.
+  </Step>
+  <Step title="Client sends join_session">
+    ```json
+    {
+      "type": "join_session",
+      "sessionId": "optional-existing-id",
+      "sessionToken": "optional-auth-token",
+      "treeVersion": 0,
+      "caps": { ... }
+    }
+    ```
+
+    | Field | Type | Required | Description |
+    |-------|------|----------|-------------|
+    | `sessionId` | string | No | Reconnect to existing session |
+    | `sessionToken` | string | No | Session authentication |
+    | `treeVersion` | number | No | Client's current tree version (for reconnect optimization) |
+    | `caps` | DeviceCaps | No | Device capability declaration |
+  </Step>
+  <Step title="Server responds with session">
+    ```json
+    {
+      "type": "session",
+      "sessionId": "assigned-session-id",
+      "sessionToken": "generated-token-or-null"
+    }
+    ```
+  </Step>
+  <Step title="Server sends current tree state">
+    If the client's `treeVersion` matches the server's current version, the server may skip re-rendering. Otherwise it sends a full `render` message.
+  </Step>
+</Steps>
+
+### Channel mode
+
+For broadcast/live viewing (read-only, multiple viewers):
+
+```json
+{ "type": "join_channel", "channelId": "channel-name" }
+```
+
+Channel clients receive `render`/`patch` messages but cannot send events.
+
+---
+
+## Messages
+
+### Server → client
+
+<AccordionGroup>
+  <Accordion title="render — full tree">
+    ```json
+    {
+      "type": "aup",
+      "action": "render",
+      "root": { ... },
+      "treeVersion": 1,
+      "fullPage": false,
+      "chrome": false,
+      "theme": "default",
+      "locale": "en"
+    }
+    ```
+
+    | Field | Type | Required | Description |
+    |-------|------|----------|-------------|
+    | `root` | AUPNode | Yes | Complete node tree |
+    | `treeVersion` | number | Yes | Monotonically increasing version |
+    | `fullPage` | boolean | No | Full-page rendering mode |
+    | `chrome` | boolean | No | Show toolbar (language, theme, mode) |
+    | `theme` | string | No | Theme identifier |
+    | `locale` | string | No | Language/locale |
+  </Accordion>
+  <Accordion title="patch — incremental update">
+    ```json
+    {
+      "type": "aup",
+      "action": "patch",
+      "ops": [ ... ],
+      "treeVersion": 2
+    }
+    ```
+
+    | Field | Type | Required | Description |
+    |-------|------|----------|-------------|
+    | `ops` | AUPPatchOp[] | Yes | Patch operations |
+    | `treeVersion` | number | Yes | New version after patch |
+  </Accordion>
+  <Accordion title="stage / take — dual-buffer transitions">
+    `stage` prepares a scene off-screen:
+
+    ```json
+    {
+      "type": "aup",
+      "action": "stage",
+      "sceneId": "scene-1",
+      "root": { ... },
+      "treeVersion": 1
+    }
+    ```
+
+    `take` activates a staged scene with zero-teardown transition:
+
+    ```json
+    {
+      "type": "aup",
+      "action": "take",
+      "sceneId": "scene-1"
+    }
+    ```
+  </Accordion>
+  <Accordion title="aup_event_result — event response">
+    ```json
+    {
+      "type": "aup_event_result",
+      "nodeId": "btn-submit",
+      "event": "click",
+      "result": { "status": "ok" },
+      "error": null
+    }
+    ```
+  </Accordion>
+  <Accordion title="Other server messages">
+    | Type | Key fields | Description |
+    |------|------------|-------------|
+    | `write` | content, format?, component? | Text output |
+    | `prompt` | message, promptType, options? | Interactive prompt |
+    | `notify` | message | Toast notification |
+    | `navigate` | pageId, content, format, layout? | Page navigation |
+    | `clear` | (none) | Clear screen |
+    | `afs_result` | reqId, data | AFS proxy success |
+    | `afs_error` | reqId, error | AFS proxy failure |
+    | `afs_event` | subId, event | AFS subscription event |
+  </Accordion>
+</AccordionGroup>
+
+### Client → server
+
+**aup_event — user interaction:**
+
+```json
+{
+  "type": "aup_event",
+  "nodeId": "input-name",
+  "event": "change",
+  "data": { "value": "Alice" }
+}
+```
+
+**Standard events:**
+
+| Event | Trigger | Typical data |
+|-------|---------|--------------|
+| `click` | Button/link pressed | — |
+| `change` | Input value changed | `{ value }` |
+| `send` | Chat message sent | `{ message }` |
+| `sort` | Table sort changed | `{ column, direction }` |
+| `select` | Item selected | `{ value }` / `{ values }` |
+| `confirm` | Dialog confirmed | — |
+| `cancel` | Dialog cancelled | — |
+| `dismiss` | Overlay dismissed | — |
+
+**Gesture events:**
+
+| Event | Data | Continuous? |
+|-------|------|-------------|
+| `swipe` | `{ direction, velocity }` | No |
+| `longpress` | `{ x, y, duration }` | No |
+| `pan` | `{ dx, dy, x, y, state }` | Yes |
+| `pinch` | `{ scale, centerX, centerY, state }` | Yes |
+| `rotate` | `{ angle, centerX, centerY, state }` | Yes |
+
+Continuous gesture events support a `throttle` (ms) field to control emission rate.
+
+**Other client messages:**
+
+| Type | Key fields | Description |
+|------|------------|-------------|
+| `input` | content | Text input (terminal mode) |
+| `prompt_response` | value | Response to `prompt` message |
+| `navigate_request` | pageId | Deep link navigation |
+| `afs_read` | reqId, path | Proxy: read AFS path |
+| `afs_list` | reqId, path, options? | Proxy: list AFS directory |
+| `afs_write` | reqId, path, content?, meta? | Proxy: write AFS path |
+| `afs_exec` | reqId, path, args? | Proxy: exec AFS action |
+| `afs_stat` | reqId, path | Proxy: stat AFS entry |
+| `afs_subscribe` | reqId, path, subId, filter? | Subscribe to AFS events |
+| `afs_unsubscribe` | reqId, subId | Unsubscribe |
+
+---
+
+## Patch operations
+
+All operations in a single patch message are applied **atomically** — if any operation fails validation, the entire batch is rejected and the tree remains unchanged.
+
+### create
+
+Add a new node to the tree.
+
+```json
+{
+  "op": "create",
+  "id": "new-node-id",
+  "parentId": "parent-node-id",
+  "node": { "id": "new-node-id", "type": "text", "props": { "content": "Hello" } },
+  "index": 0
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | New node ID; must not exist in tree |
+| `parentId` | string | Yes | Parent node ID; must exist |
+| `node` | AUPNode | Yes | Complete node to insert |
+| `index` | number | No | Insertion position; default: append |
+
+### update
+
+Modify an existing node's properties, state, or events.
+
+```json
+{
+  "op": "update",
+  "id": "existing-node-id",
+  "props": { "content": "Updated text" },
+  "state": { "expanded": true }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Node ID; must exist |
+| `props` | Record\<string, unknown\> | No | Shallow-merged into existing props |
+| `state` | Record\<string, unknown\> | No | Shallow-merged into existing state |
+| `events` | Record\<string, AUPEvent\> | No | **Replaces** existing events (not merged) |
+| `children` | AUPNode[] | No | Replaces children wholesale |
+
+### remove
+
+Remove a node and all its descendants.
+
+```json
+{ "op": "remove", "id": "node-to-remove" }
+```
+
+Removing the root node clears the entire tree.
+
+### reorder
+
+Move a node to a new position within its parent's children.
+
+```json
+{
+  "op": "reorder",
+  "id": "node-to-move",
+  "parentId": "parent-node-id",
+  "index": 2
+}
+```
+
+<Note>
+`create` allows `index === parent.children.length` (append semantics), but `reorder` rejects `index >= parent.children.length` (strict bounds). This is intentional: reorder first removes the node then reinserts, so the valid range is one smaller.
+</Note>
+
+### Tree version
+
+Version is a monotonically increasing integer. It increments on every `render` or `patch` operation, starting at 0 for a new session. Clients track version for reconnect optimization.
+
+---
+
+## Device capabilities
+
+Clients declare their rendering capabilities at connection time.
+
+### DeviceCaps
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `platform` | string | Yes | `"web"`, `"ios"`, `"android"`, `"cli"`, etc. |
+| `formFactor` | string | Yes | `"desktop"`, `"phone"`, `"tablet"`, `"watch"`, `"tv"`, `"terminal"` |
+| `display` | DeviceDisplay | No | Display characteristics |
+| `input` | DeviceInput | No | Input method capabilities |
+| `primitives` | Record\<string, PrimitiveCap\> | Yes | Per-primitive rendering capability |
+| `features` | Record\<string, boolean\> | No | Device features: `"camera"`, `"gps"`, `"biometric"` |
+
+### PrimitiveCap
+
+| Value | Meaning |
+|-------|---------|
+| `"native"` | Full native rendering |
+| `"webview"` | Rendered in embedded web view |
+| `"partial"` | Basic rendering; some features missing |
+| `"unsupported"` | Cannot render this primitive |
+
+### Built-in presets
+
+| Preset | Platform | Form factor | Key capabilities |
+|--------|----------|-------------|------------------|
+| `DEVICE_CAPS_TTY` | cli | terminal | text only |
+| `DEVICE_CAPS_TERM` | web | terminal | text + basic styling |
+| `DEVICE_CAPS_WEB_CHAT` | web | desktop | text, chat, overlay, media, action |
+| `DEVICE_CAPS_WEB_FULL` | web | desktop | all primitives via webview |
+
+---
+
+## Degradation
+
+When a client cannot render a primitive, AUP automatically degrades it server-side before sending.
+
+| Primitive | Fallback chain |
+|-----------|----------------|
+| `chart` | table → text |
+| `map` | media → text |
+| `editor` | input → text |
+| `canvas` | media → text |
+| `calendar` | table → text |
+| `time` | text |
+| `overlay` | text |
+| `nav` | view → text |
+| `deck` | view |
+| `ticker` | text |
+| `frame` | text (shows URL) |
+| `broadcast` | media → text |
+| `rtc` | unsupported |
+
+Degraded nodes are annotated with a `_degradedFrom` prop. Nodes with no meaningful fallback become `text` with `_unsupported: true`.
+
+---
+
+## AFS exec actions
+
+AUP operations are accessible as AFS exec actions, enabling agent orchestration through the filesystem interface.
+
+**Session actions** — path pattern: `/:endpoint/sessions/:sessionId/.actions/<action>`
+
+| Action | Input | Description |
+|--------|-------|-------------|
+| `aup_render` | `{ root, fullPage?, chrome?, theme?, style?, locale? }` | Render full tree |
+| `aup_patch` | `{ ops }` | Apply patch operations |
+| `aup_stage` | `{ sceneId, root, ... }` | Stage a scene |
+| `aup_take` | `{ sceneId }` | Activate staged scene |
+| `aup_save` | `{ pageId }` | Save current tree as page |
+| `aup_load` | `{ pageId, ... }` | Load saved page |
+
+**Live channel actions** — path pattern: `/:endpoint/live/:channelId/.actions/<action>`
+
+| Action | Input | Description |
+|--------|-------|-------------|
+| `aup_render` | `{ root, ... }` | Render to live channel (broadcast) |
+| `aup_patch` | `{ ops }` | Patch live channel tree |
+
+---
+
+## Caller identity
+
+Authenticated AUP sessions carry DID-based caller identity via HTTP headers:
+
+| Header | Description |
+|--------|-------------|
+| `x-caller-did` | Caller's Decentralized Identifier (DID) |
+| `x-caller-pk` | Caller's public key for signature verification |
+
+These headers are set during WebSocket upgrade or initial HTTP handshake. The server propagates them into `AFSContext` as `userId`. If neither header is present, the session is treated as anonymous.

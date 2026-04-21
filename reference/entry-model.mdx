@@ -1,0 +1,243 @@
+---
+title: "AFSEntry, AFSEntryMetadata, and ActionSummary types"
+description: "Field reference for AFSEntry, AFSEntryMetadata, and ActionSummary — the core data structures returned by every AFS read, list, and stat operation."
+---
+
+Every AFS operation that returns data wraps it in an `AFSEntry`. This document describes every field of `AFSEntry`, its nested `AFSEntryMetadata`, and the `ActionSummary` objects that describe callable actions. These types are defined in `packages/core/src/type.ts` and should be treated as the authoritative schema for all provider responses.
+
+## AFSEntry
+
+`AFSEntry<T = any>` is the universal data node returned by `read()`, `list()`, `stat()`, and `write()`. It is generic over its `content` type.
+
+```typescript
+interface AFSEntry<T = any> {
+  id: string;
+  path: string;
+  content?: T;
+  meta?: AFSEntryMetadata | null;
+  actions?: ActionSummary[];
+  summary?: string | null;
+  linkTo?: string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+  agentId?: string | null;
+  userId?: string | null;
+  sessionId?: string | null;
+}
+```
+
+### Fields
+
+<ResponseField name="id" type="string" required>
+  Unique identifier for the entry within its provider. Often equals the normalized path, but providers may assign any stable ID.
+</ResponseField>
+
+<ResponseField name="path" type="string" required>
+  The full virtual path within the AFS tree (e.g., `/docs/README.md`). Always starts with `/`. After `list()`, paths are rebased to include the mount prefix.
+</ResponseField>
+
+<ResponseField name="content" type="T | undefined">
+  Entry content. Type is provider-specific: a `string` for text files, a plain object for structured data, `undefined` for directory-like nodes. In `stat()` results this field is always absent.
+</ResponseField>
+
+<ResponseField name="meta" type="AFSEntryMetadata | null | undefined">
+  Metadata describing the node's shape and capabilities. See [AFSEntryMetadata](#afsentrymetadata) below.
+</ResponseField>
+
+<ResponseField name="actions" type="ActionSummary[] | undefined">
+  Callable actions available on this entry. Each action can be executed via `afs.exec("/{path}/.actions/{name}", args)`. See [ActionSummary](#actionsummary) below.
+</ResponseField>
+
+<ResponseField name="summary" type="string | null | undefined">
+  Short human-readable description of the entry. Typically used in `list()` results to give agents quick context without reading the full content.
+</ResponseField>
+
+<ResponseField name="linkTo" type="string | null | undefined">
+  When set, this entry is a symbolic link to another AFS path. Consumers may choose to follow or display the link target.
+</ResponseField>
+
+<ResponseField name="createdAt" type="Date | undefined">
+  Creation timestamp. Undefined when the underlying data source does not track creation time.
+</ResponseField>
+
+<ResponseField name="updatedAt" type="Date | undefined">
+  Last-modified timestamp. Undefined when the underlying data source does not track modification time.
+</ResponseField>
+
+<ResponseField name="agentId" type="string | null | undefined">
+  Agent identifier that created or owns this entry. Used for filtering in `list()` via `AFSListOptions.filter.agentId`.
+</ResponseField>
+
+<ResponseField name="userId" type="string | null | undefined">
+  User identifier associated with this entry.
+</ResponseField>
+
+<ResponseField name="sessionId" type="string | null | undefined">
+  Session identifier associated with this entry.
+</ResponseField>
+
+## AFSEntryMetadata
+
+`AFSEntryMetadata` extends `Record<string, any>`, so providers may include arbitrary additional fields. The fields below are part of the standard contract.
+
+```typescript
+interface AFSEntryMetadata extends Record<string, any> {
+  kind?: string;
+  kinds?: string[];
+  childrenCount?: number;
+  size?: number;
+  description?: string;
+  contentType?: string;
+  events?: AFSEventDeclaration[];
+}
+```
+
+<ResponseField name="kind" type="string | undefined">
+  Primary kind identifier for the node, using the `"namespace:type"` format (e.g., `"afs:node"`, `"afs:leaf"`, `"mcp:tool"`). Used by agents and UI to determine how to render the node.
+</ResponseField>
+
+<ResponseField name="kinds" type="string[] | undefined">
+  Full kind inheritance chain from most specific to most general. The first element matches `kind`.
+
+  ```typescript
+  // Example for an MCP tool
+  meta.kinds = ["mcp:tool", "afs:executable", "afs:node"]
+
+  // Capability detection
+  const isExecutable = meta.kinds?.includes("afs:executable") ?? false;
+  ```
+</ResponseField>
+
+<ResponseField name="childrenCount" type="number | undefined">
+  Number of children this node has.
+
+  | Value | Meaning |
+  |-------|---------|
+  | `undefined` | Leaf node — no children possible (safe default) |
+  | `0` | Empty container node |
+  | `N > 0` | Container with exactly N known children |
+  | `-1` | Container with children but count unknown (lazy loading) |
+
+  <Note>
+    Providers that forget to set `childrenCount` produce `undefined`, which defaults to leaf behaviour — failing safe rather than causing infinite expansion.
+  </Note>
+</ResponseField>
+
+<ResponseField name="size" type="number | undefined">
+  Content size in bytes. Only meaningful for content nodes (files).
+</ResponseField>
+
+<ResponseField name="description" type="string | undefined">
+  Human-readable description of the node. Surfaced in virtual directory entries built by the AFS core when a provider has no dedicated `list()` result for a path.
+</ResponseField>
+
+<ResponseField name="events" type="AFSEventDeclaration[] | undefined">
+  Event types this provider can emit, as declared in the `.meta` virtual path. Allows subscribers to know which `afs.subscribe()` filters are meaningful for this node.
+</ResponseField>
+
+## ActionSummary
+
+`ActionSummary` describes a single callable action that appears in `AFSEntry.actions`.
+
+```typescript
+interface ActionSummary {
+  name: string;
+  description?: string;
+  inputSchema?: JSONSchema7;
+  severity?: ActionSeverity;
+}
+```
+
+<ResponseField name="name" type="string" required>
+  The action name (e.g., `"refresh"`, `"export"`, `"delete"`). This name is used as the final path segment when calling `afs.exec("/{resource}/.actions/{name}", args)`.
+</ResponseField>
+
+<ResponseField name="description" type="string | undefined">
+  Human-readable description of what the action does.
+</ResponseField>
+
+<ResponseField name="inputSchema" type="JSONSchema7 | undefined">
+  JSON Schema for the action's input parameters. AFS core validates `exec()` arguments against this schema when present.
+</ResponseField>
+
+<ResponseField name="severity" type='"ambient" | "boundary" | "critical" | undefined'>
+  Action severity classification used by the policy enforcement system.
+
+  | Severity | Meaning |
+  |----------|---------|
+  | `"ambient"` | Low-risk, easily reversible (e.g., toggle a light, honk horn) |
+  | `"boundary"` | Medium-risk, noticeable effect (e.g., lock doors, start charging) |
+  | `"critical"` | High-risk, hard to reverse (e.g., unlock vehicle, remote start) |
+
+  Unknown actions default to `"boundary"` (safe by default). Provider `riskLevel` can raise the floor: a `"system"` or `"external"` provider cannot self-declare actions as `"ambient"`.
+</ResponseField>
+
+## Zod schemas
+
+The core package exports runtime Zod schemas for both types. Use these when you need to validate provider responses at runtime.
+
+```typescript
+import { afsEntrySchema, actionSummarySchema } from "@aigne/afs";
+
+const entry = afsEntrySchema.parse(unknownData);
+const action = actionSummarySchema.parse(unknownAction);
+```
+
+```typescript
+const actionSummarySchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  inputSchema: z.record(z.string(), z.any()).optional(),
+  severity: z.enum(["ambient", "boundary", "critical"]).optional(),
+});
+
+const afsEntrySchema: ZodType<AFSEntry> = z.object({
+  id: z.string(),
+  createdAt: z.date().optional(),
+  updatedAt: z.date().optional(),
+  path: z.string(),
+  userId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  meta: z.record(z.string(), z.any()).nullable().optional(),
+  linkTo: z.string().nullable().optional(),
+  content: z.any().optional(),
+  actions: z.array(actionSummarySchema).optional(),
+});
+```
+
+## Complete type example
+
+```typescript
+import type { AFSEntry, AFSEntryMetadata, ActionSummary } from "@aigne/afs";
+
+const entry: AFSEntry = {
+  id: "/vehicle/abc123",
+  path: "/vehicle/abc123",
+  content: {
+    make: "Tesla",
+    model: "Model 3",
+    vin: "5YJ3E1EA1PF000001",
+  },
+  meta: {
+    kind: "iot:vehicle",
+    kinds: ["iot:vehicle", "afs:node"],
+    childrenCount: 3,
+    description: "Tesla Model 3 — primary vehicle",
+  },
+  actions: [
+    {
+      name: "lock",
+      description: "Lock all doors",
+      severity: "boundary",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "remote-start",
+      description: "Start the engine remotely",
+      severity: "critical",
+    },
+  ],
+  updatedAt: new Date("2026-01-15T08:30:00Z"),
+};
+```

@@ -1,0 +1,386 @@
+---
+title: "AFS error classes: codes, fields, and catch patterns"
+description: "Reference for all AFS error classes: AFSError, AFSNotFoundError, AFSReadonlyError, AFSAccessModeError, AFSMountError, AFSValidationError, AFSSeverityError."
+---
+
+AFS uses a hierarchy of typed error classes so callers can handle failures precisely. All errors extend `AFSError`, which itself extends the standard JavaScript `Error`. Every class sets `this.name` to its class name and carries a `code` string for programmatic handling. Error classes are defined in `packages/core/src/error.ts`.
+
+## Error hierarchy
+
+```
+Error
+└── AFSError (base)
+    ├── AFSNotFoundError
+    ├── AFSAlreadyExistsError
+    ├── AFSReadonlyError
+    ├── AFSAccessModeError
+    ├── AFSMountError
+    ├── AFSValidationError
+    ├── AFSSeverityError
+    └── AFSPatchError
+```
+
+---
+
+## AFSError
+
+Base class for all AFS errors. Catches any AFS-specific failure.
+
+```typescript
+class AFSError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string)
+}
+```
+
+<ResponseField name="code" type="string">
+  Machine-readable error code set by each subclass.
+</ResponseField>
+
+```typescript
+import { AFSError } from "@aigne/afs";
+
+try {
+  await afs.read("/some/path");
+} catch (err) {
+  if (err instanceof AFSError) {
+    console.error(`AFS error [${err.code}]: ${err.message}`);
+  }
+}
+```
+
+---
+
+## AFSNotFoundError
+
+Thrown when a path does not exist in the virtual filesystem.
+
+```typescript
+class AFSNotFoundError extends AFSError {
+  readonly path: string;
+
+  constructor(path: string, message?: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSNotFoundError"` |
+| `code` | `"AFS_NOT_FOUND"` |
+| `path` | The requested path that was not found |
+
+**When thrown:** `read()`, `stat()`, `delete()`, `exec()`, and `check()` throw this error when no provider handles the given path, or the provider finds no entry at that path.
+
+```typescript
+import { AFSNotFoundError } from "@aigne/afs";
+
+try {
+  const result = await afs.read("/missing/file.md");
+} catch (err) {
+  if (err instanceof AFSNotFoundError) {
+    console.error(`Not found: ${err.path}`);
+  }
+}
+```
+
+---
+
+## AFSAlreadyExistsError
+
+Thrown when attempting to create a path that already exists, specifically during `write()` with `mode: "create"`.
+
+```typescript
+class AFSAlreadyExistsError extends AFSError {
+  readonly path: string;
+
+  constructor(path: string, message?: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSAlreadyExistsError"` |
+| `code` | `"AFS_ALREADY_EXISTS"` |
+| `path` | The path that already exists |
+
+**When thrown:** `AFSBaseProvider.write()` throws this when `mode` is `"create"` and `stat()` confirms the path already exists.
+
+```typescript
+import { AFSAlreadyExistsError } from "@aigne/afs";
+
+try {
+  await afs.write("/notes/draft.md", { content: "# Draft" }, { mode: "create" });
+} catch (err) {
+  if (err instanceof AFSAlreadyExistsError) {
+    console.error(`File already exists: ${err.path}`);
+  }
+}
+```
+
+---
+
+## AFSReadonlyError
+
+Thrown when a write operation is attempted on a provider or mount whose `accessMode` is `"readonly"`.
+
+```typescript
+class AFSReadonlyError extends AFSError {
+  constructor(message: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSReadonlyError"` |
+| `code` | `"AFS_READONLY"` |
+
+**When thrown:** `write()`, `delete()`, `exec()`, and `rename()` on a provider with `accessMode: "readonly"`.
+
+```typescript
+import { AFSReadonlyError } from "@aigne/afs";
+
+try {
+  await afs.write("/archive/old.md", { content: "updated" });
+} catch (err) {
+  if (err instanceof AFSReadonlyError) {
+    console.error("Write denied — provider is read-only");
+  }
+}
+```
+
+---
+
+## AFSAccessModeError
+
+Thrown when an operation is denied by the mount's `accessMode` setting. More granular than `AFSReadonlyError` — covers `"create"` and `"append"` modes that allow some but not all write operations.
+
+```typescript
+class AFSAccessModeError extends AFSError {
+  readonly accessMode: string;
+  readonly attemptedOp: string;
+
+  constructor(accessMode: string, attemptedOp: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSAccessModeError"` |
+| `code` | `"AFS_ACCESS_MODE"` |
+| `accessMode` | The mount's current access mode (e.g., `"create"`, `"append"`) |
+| `attemptedOp` | The operation that was denied (e.g., `"replace"`, `"delete"`) |
+
+**When thrown:** When the write mode or operation type is not permitted by the provider's `accessMode`. For example, calling `write(path, payload, { mode: "replace" })` on a mount with `accessMode: "create"`, or calling `delete()` on a mount with `accessMode: "append"`.
+
+```typescript
+import { AFSAccessModeError } from "@aigne/afs";
+
+try {
+  await afs.delete("/inbox/msg-1");
+} catch (err) {
+  if (err instanceof AFSAccessModeError) {
+    console.error(
+      `Operation "${err.attemptedOp}" denied — access mode is "${err.accessMode}"`
+    );
+  }
+}
+```
+
+<Note>
+  Access mode policy matrix: `"readonly"` → no writes; `"create"` → only `mode: "create"` writes; `"append"` → `mode: "create"` and `mode: "append"` writes; `"readwrite"` → all operations.
+</Note>
+
+---
+
+## AFSMountError
+
+Thrown when a provider fails its async health check during or after `mount()`.
+
+```typescript
+class AFSMountError extends AFSError {
+  readonly providerName: string;
+  readonly step: "stat" | "read" | "list" | "trust";
+
+  constructor(providerName: string, step: AFSMountError["step"], message: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSMountError"` |
+| `code` | `"AFS_MOUNT_FAILED"` |
+| `providerName` | Name of the provider that failed |
+| `step` | The mount-check step that failed: `"stat"`, `"read"`, `"list"`, or `"trust"` |
+
+**When thrown:** `afs.check(path)` throws this if the background health check set `entry.status = "error"`. The check validates `stat()` or `read()` on `/`, and `list()` when `childrenCount > 0`. The `"trust"` step fails when VC verification rejects the provider's credential.
+
+```typescript
+import { AFSMountError } from "@aigne/afs";
+
+await afs.mount(provider, "/api");
+try {
+  await afs.check("/api");
+} catch (err) {
+  if (err instanceof AFSMountError) {
+    console.error(
+      `Provider "${err.providerName}" failed mount check at step "${err.step}": ${err.message}`
+    );
+  }
+}
+```
+
+<Warning>
+  `mount()` returns immediately — the health check is async. Always call `afs.check(path)` when you need to confirm the provider is reachable before proceeding.
+</Warning>
+
+---
+
+## AFSValidationError
+
+Thrown when input validation fails — for example, a path traversal attempt in a `.as/` path, mounting at a reserved path, or an invalid namespace name.
+
+```typescript
+class AFSValidationError extends AFSError {
+  constructor(message: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSValidationError"` |
+| `code` | `"AFS_VALIDATION_ERROR"` |
+
+**When thrown:** Path traversal in `.as/` paths, mounting at reserved prefixes (`/registry`, `/.actions`, `/.meta`, `/.as`), invalid namespace names, and exec input that fails JSON Schema validation.
+
+```typescript
+import { AFSValidationError } from "@aigne/afs";
+
+try {
+  await afs.mount(provider, "/.actions/illegal");
+} catch (err) {
+  if (err instanceof AFSValidationError) {
+    console.error(`Validation error: ${err.message}`);
+  }
+}
+```
+
+---
+
+## AFSSeverityError
+
+Thrown when `exec()` is called for an action whose severity level is blocked by the provider's `actionPolicy`.
+
+```typescript
+class AFSSeverityError extends AFSError {
+  readonly actionName: string;
+  readonly severity: string;
+  readonly policy: string;
+
+  constructor(actionName: string, severity: string, policy: string)
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSSeverityError"` |
+| `code` | `"AFS_SEVERITY_DENIED"` |
+| `actionName` | The name of the blocked action |
+| `severity` | The action's declared severity (e.g., `"critical"`) |
+| `policy` | The active policy that denied it (e.g., `"safe"`, `"standard"`, or `"blocked"`) |
+
+**When thrown:** `exec()` checks the action's severity against the module's `actionPolicy`. Actions in `blockedActions` are always denied (policy is `"blocked"`). Actions exceeding the severity allowed by `"safe"` or `"standard"` policies are denied.
+
+```typescript
+import { AFSSeverityError } from "@aigne/afs";
+
+try {
+  await afs.exec("/vehicle/.actions/remote-start", {});
+} catch (err) {
+  if (err instanceof AFSSeverityError) {
+    console.error(
+      `Action "${err.actionName}" (severity: ${err.severity}) blocked by policy "${err.policy}"`
+    );
+  }
+}
+```
+
+---
+
+## AFSPatchError
+
+Thrown when a `patch` mode write fails because a patch target cannot be found or is ambiguous.
+
+```typescript
+class AFSPatchError extends AFSError {
+  constructor(
+    code: "PATCH_TARGET_NOT_FOUND" | "PATCH_TARGET_AMBIGUOUS",
+    message: string
+  )
+}
+```
+
+| Property | Value |
+|----------|-------|
+| `name` | `"AFSPatchError"` |
+| `code` | `"PATCH_TARGET_NOT_FOUND"` or `"PATCH_TARGET_AMBIGUOUS"` |
+
+**When thrown:** `write(path, payload, { mode: "patch" })` when `applyPatches()` cannot locate the `target` string in the file content, or when the target matches more than once and is ambiguous.
+
+```typescript
+import { AFSPatchError } from "@aigne/afs";
+
+try {
+  await afs.write("/config.ts", {
+    patches: [{ op: "str_replace", target: "nonexistent text", content: "new text" }]
+  }, { mode: "patch" });
+} catch (err) {
+  if (err instanceof AFSPatchError) {
+    if (err.code === "PATCH_TARGET_NOT_FOUND") {
+      console.error("Patch target not found in file");
+    } else {
+      console.error("Patch target matched multiple locations");
+    }
+  }
+}
+```
+
+---
+
+## Handling all AFS errors
+
+```typescript
+import {
+  AFSError,
+  AFSNotFoundError,
+  AFSAlreadyExistsError,
+  AFSReadonlyError,
+  AFSAccessModeError,
+  AFSMountError,
+  AFSValidationError,
+  AFSSeverityError,
+  AFSPatchError,
+} from "@aigne/afs";
+
+async function safeRead(afs: AFS, path: string) {
+  try {
+    return await afs.read(path);
+  } catch (err) {
+    if (err instanceof AFSNotFoundError) {
+      return null; // entry does not exist
+    }
+    if (err instanceof AFSReadonlyError || err instanceof AFSAccessModeError) {
+      throw new Error(`Permission denied: ${err.message}`);
+    }
+    if (err instanceof AFSError) {
+      // Catch-all for any other AFS error
+      throw new Error(`AFS [${err.code}]: ${err.message}`);
+    }
+    throw err; // unknown, re-throw
+  }
+}
+```
+
+<Tip>
+  Always check for specific subclasses before catching the base `AFSError`. Since subclasses set distinct `code` values and extra properties (like `path` on `AFSNotFoundError` or `step` on `AFSMountError`), specific checks give you the data you need to handle each case correctly.
+</Tip>

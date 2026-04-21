@@ -1,97 +1,109 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "AFS: Agentic File System for AI agents"
+description: "AFS is a virtual filesystem abstraction that gives AI agents one consistent path-based API across files, Git repos, databases, APIs, and cloud services."
 ---
 
-## Setting up
+AFS (Agentic File System) is a virtual filesystem abstraction that gives AI agents a consistent, composable interface to any data source. Inspired by the Unix "everything is a file" philosophy, AFS extends this to **"everything is context"** — databases, APIs, cloud services, and local files all become paths that agents can `read`, `write`, `search`, and act on.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install AFS and mount your first provider in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core concepts" icon="book" href="/concepts">
+    Understand the AFS entry model, operations, and mount system.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Providers" icon="plug" href="/providers/overview">
+    Explore built-in providers: Filesystem, Git, SQLite, HTTP, MCP, and more.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/reference/afs-class">
+    Full TypeScript API reference for the AFS class and all providers.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What AFS does
 
-Everything you need to create world-class documentation.
+Every data source — local files, Git repositories, SQLite databases, remote APIs, MCP servers — exposes the same 8 operations through a path-based namespace. Agents learn one interface and gain access to everything.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+```
+                    ┌─────────────────────────────┐
+                    │     Agent / Application      │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │      AFS Core                 │
+                    │  mount · route · read · write │
+                    │  list · search · stat · exec  │
+                    └──┬─────┬─────┬─────┬─────┬───┘
+                       │     │     │     │     │
+           ┌───────┐ ┌─┴──┐ ┌┴───┐ ┌┴──┐ ┌────┴────┐
+           │  FS   │ │Git │ │JSON│ │SQL│ │  AFS-UI  │
+           └───────┘ └────┘ └────┘ └───┘ └─────────┘
+```
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install the core package and a provider">
+    ```bash
+    npm install @aigne/afs @aigne/afs-fs
+    ```
+  </Step>
+  <Step title="Create an AFS instance and mount a provider">
+    ```typescript
+    import { AFS } from "@aigne/afs";
+    import { AFSFS } from "@aigne/afs-fs";
+
+    const afs = new AFS();
+    await afs.mount(new AFSFS({ localPath: "./my-project" }), "/code");
+    ```
+  </Step>
+  <Step title="Read, list, and search across your data">
+    ```typescript
+    // Read a file
+    const { data } = await afs.read("/code/src/index.ts");
+
+    // List a directory
+    const { data: listing } = await afs.list("/code/src");
+
+    // Search for content
+    const { data: results } = await afs.search("/code", "TODO");
+    ```
+  </Step>
+  <Step title="Add more providers and compose a unified namespace">
+    ```typescript
+    import { AFSGit } from "@aigne/afs-git";
+    import { SQLiteAFS } from "@aigne/afs-sqlite";
+
+    await afs.mount(new AFSGit({ repoPath: "./repo" }), "/git");
+    await afs.mount(new SQLiteAFS({ url: "file:./data.db" }), "/db");
+
+    // All sources under one roof
+    await afs.read("/code/README.md");
+    await afs.read("/git/main/src/index.ts");
+    await afs.exec("/db/.actions/query", { sql: "SELECT * FROM users LIMIT 10" });
+    ```
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="8 standard operations" icon="layer-group">
+    `read`, `write`, `list`, `delete`, `search`, `stat`, `explain`, `exec` — the same API regardless of what's behind the path.
+  </Card>
+  <Card title="Pluggable providers" icon="puzzle-piece">
+    Mount any combination of providers at any path. Write your own by extending `AFSBaseProvider` with decorators.
+  </Card>
+  <Card title="MCP integration" icon="robot">
+    Expose your entire AFS namespace to Claude, Cursor, or any MCP-compatible AI tool with a single command.
+  </Card>
+  <Card title="Agent UI Protocol" icon="display">
+    Render web pages from declarative AUP JSON trees via `@aigne/afs-ui` — no separate UI SDK required.
+  </Card>
+  <Card title="CLI tool" icon="terminal">
+    Explore, read, search, and serve AFS interactively from the command line with `@aigne/afs-cli`.
+  </Card>
+  <Card title="Conformance testing" icon="flask">
+    Validate any AFS implementation — in any language — with the language-agnostic YAML test suite.
+  </Card>
+</CardGroup>

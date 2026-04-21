@@ -1,0 +1,528 @@
+---
+title: "AFS operations: options and result type reference"
+description: "Input and output type reference for every AFS operation: read, write, list, delete, search, stat, explain, and exec — options and result shapes."
+---
+
+Every AFS method accepts a typed options object and returns a typed result. All options types extend `AFSOperationOptions`, which carries the optional `context` field. This page documents every field of every options and result type, extracted directly from `packages/core/src/type.ts`.
+
+## Shared base type
+
+All operation options inherit from `AFSOperationOptions`.
+
+```typescript
+interface AFSOperationOptions {
+  context?: AFSContext;
+}
+```
+
+<ParamField body="context" type="AFSContext">
+  Execution context injected by callers and available to providers.
+
+  <Expandable title="AFSContext fields">
+    <ParamField body="afs" type="AFSRoot | undefined">
+      AFS root instance — injected automatically by `AFS.exec()` for cross-provider operations.
+    </ParamField>
+
+    <ParamField body="userId" type="string | undefined">
+      Caller's user ID, used for rate limiting and audit logging.
+    </ParamField>
+
+    <ParamField body="sessionId" type="string | undefined">
+      Caller's session ID, used for audit logging.
+    </ParamField>
+
+    <ParamField body="requestId" type="string | undefined">
+      Per-request correlation ID.
+    </ParamField>
+
+    <ParamField body="logger" type="AFSLogger | undefined">
+      Per-request structured logger.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## read
+
+### AFSReadOptions
+
+```typescript
+interface AFSReadOptions extends AFSOperationOptions {
+  filter?: {
+    agentId?: string;
+    userId?: string;
+    sessionId?: string;
+    before?: string;
+    after?: string;
+  };
+  startLine?: number;
+  endLine?: number;
+  as?: string;
+}
+```
+
+<ParamField body="filter" type="object">
+  Filter the result by ownership or time range. Providers are free to ignore unsupported filter fields.
+
+  <Expandable title="filter fields">
+    <ParamField body="agentId" type="string">Filter by agent ID.</ParamField>
+    <ParamField body="userId" type="string">Filter by user ID.</ParamField>
+    <ParamField body="sessionId" type="string">Filter by session ID.</ParamField>
+    <ParamField body="before" type="string">Filter entries before this timestamp (ISO 8601 string).</ParamField>
+    <ParamField body="after" type="string">Filter entries after this timestamp (ISO 8601 string).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="startLine" type="number">
+  Start line (1-indexed, inclusive) for content slicing. Defaults to `1` when `endLine` is set.
+</ParamField>
+
+<ParamField body="endLine" type="number">
+  End line (1-indexed, inclusive). `-1` means end of file. Defaults to `-1` when `startLine` is set. AFS core applies this slicing to `string` content after the provider returns.
+</ParamField>
+
+<ParamField body="as" type="string">
+  Request an alternative representation (e.g., `"text"`, `"html"`, `"json"`). Equivalent to appending `.as/{value}` to the path. Provider must implement `supportedAs()` to declare supported values.
+</ParamField>
+
+### AFSReadResult
+
+```typescript
+interface AFSReadResult {
+  data?: AFSEntry;
+  message?: string;
+}
+```
+
+<ResponseField name="data" type="AFSEntry | undefined">
+  The requested entry. `undefined` when the path was not found (some providers throw `AFSNotFoundError` instead).
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional message from the provider.
+</ResponseField>
+
+---
+
+## write
+
+### AFSWriteOptions
+
+```typescript
+interface AFSWriteOptions extends AFSOperationOptions {
+  mode?: "replace" | "append" | "prepend" | "patch" | "create" | "update";
+  as?: string;
+}
+```
+
+<ParamField body="mode" type='"replace" | "append" | "prepend" | "patch" | "create" | "update"'>
+  Write behaviour. Defaults to `"replace"`.
+
+  | Mode | Behaviour |
+  |------|-----------|
+  | `"replace"` | Overwrite the entire entry (default) |
+  | `"append"` | Append to existing content; creates the entry if it does not exist |
+  | `"prepend"` | Prepend to existing content; creates the entry if it does not exist |
+  | `"patch"` | Apply structured patches from `payload.patches`; no-op if patches is empty |
+  | `"create"` | Fail with `AFSAlreadyExistsError` if the path already exists |
+  | `"update"` | Fail with `AFSNotFoundError` if the path does not exist |
+</ParamField>
+
+<ParamField body="as" type="string">
+  Write to an alternative representation of the content. Requires provider support.
+</ParamField>
+
+### AFSWriteEntryPayload
+
+```typescript
+interface AFSWriteEntryPayload extends Omit<AFSEntry, "id" | "path"> {
+  patches?: AFSPatch[];
+}
+```
+
+`AFSWriteEntryPayload` is `AFSEntry` minus `id` and `path` (those come from the call-site path argument), plus an optional `patches` array for `mode: "patch"`.
+
+<ParamField body="content" type="any">
+  New content for the entry. Type is provider-specific.
+</ParamField>
+
+<ParamField body="meta" type="AFSEntryMetadata | null">
+  Metadata to store alongside the content.
+</ParamField>
+
+<ParamField body="patches" type="AFSPatch[]">
+  Structured text patches applied when `mode` is `"patch"`.
+
+  <Expandable title="AFSPatch fields">
+    <ParamField body="op" type='"str_replace" | "insert_before" | "insert_after" | "delete"' required>
+      The patch operation.
+    </ParamField>
+
+    <ParamField body="target" type="string" required>
+      The target substring or line to locate within the file.
+    </ParamField>
+
+    <ParamField body="content" type="string">
+      Replacement or insertion content. Not used for `"delete"` operations.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### AFSWriteResult
+
+```typescript
+interface AFSWriteResult {
+  data: AFSEntry;
+  message?: string;
+}
+```
+
+<ResponseField name="data" type="AFSEntry">
+  The entry as stored after the write operation.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional message from the provider.
+</ResponseField>
+
+---
+
+## list
+
+### AFSListOptions
+
+```typescript
+interface AFSListOptions extends AFSOperationOptions {
+  filter?: {
+    agentId?: string;
+    userId?: string;
+    sessionId?: string;
+    before?: string;
+    after?: string;
+  };
+  maxDepth?: number;
+  offset?: number;
+  limit?: number;
+  orderBy?: [string, "asc" | "desc"][];
+  maxChildren?: number;
+  onOverflow?: "truncate";
+  disableGitignore?: boolean;
+  pattern?: string;
+}
+```
+
+<ParamField body="filter" type="object">
+  Filter entries by `agentId`, `userId`, `sessionId`, `before`, or `after` (same structure as `AFSReadOptions.filter`).
+</ParamField>
+
+<ParamField body="maxDepth" type="number">
+  Maximum recursion depth. `1` returns direct children only (default). `0` returns an empty array. The base provider performs BFS expansion automatically for handlers with `handleDepth: false`.
+</ParamField>
+
+<ParamField body="offset" type="number">
+  Number of entries to skip. Default `0`.
+</ParamField>
+
+<ParamField body="limit" type="number">
+  Maximum entries to return. Default `1000`.
+</ParamField>
+
+<ParamField body="orderBy" type="[string, 'asc' | 'desc'][]">
+  Sort criteria. Each tuple is `[fieldName, direction]`.
+</ParamField>
+
+<ParamField body="maxChildren" type="number">
+  Maximum children to fetch per directory node during depth expansion.
+</ParamField>
+
+<ParamField body="onOverflow" type='"truncate"'>
+  Behaviour when `maxChildren` is exceeded. `"truncate"` silently drops excess entries.
+</ParamField>
+
+<ParamField body="disableGitignore" type="boolean">
+  Disable `.gitignore` filtering when listing files (filesystem-backed providers). Default `false`.
+</ParamField>
+
+<ParamField body="pattern" type="string">
+  Glob pattern to filter entries by path. Applied after BFS expansion so directories are still traversed even if they don't match. Examples: `"*.ts"`, `"**/*.{ts,tsx}"`, `"src/**"`.
+</ParamField>
+
+### AFSListResult
+
+```typescript
+interface AFSListResult {
+  data: AFSEntry[];
+  message?: string;
+  total?: number;
+}
+```
+
+<ResponseField name="data" type="AFSEntry[]">
+  Array of entries under the requested path.
+</ResponseField>
+
+<ResponseField name="total" type="number | undefined">
+  Total count of the unsliced result set. When present, the response is a paginated subset. When absent, `data.length` equals the total.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional provider message (e.g., a warning about incomplete results).
+</ResponseField>
+
+---
+
+## delete
+
+### AFSDeleteOptions
+
+```typescript
+interface AFSDeleteOptions extends AFSOperationOptions {
+  recursive?: boolean;
+}
+```
+
+<ParamField body="recursive" type="boolean">
+  When `true`, delete a directory and all its contents. When `false` (default), non-empty directories may throw depending on the provider.
+</ParamField>
+
+### AFSDeleteResult
+
+```typescript
+interface AFSDeleteResult {
+  message?: string;
+}
+```
+
+<ResponseField name="message" type="string | undefined">
+  Optional confirmation or error message.
+</ResponseField>
+
+---
+
+## search
+
+### AFSSearchOptions
+
+```typescript
+interface AFSSearchOptions extends AFSOperationOptions {
+  limit?: number;
+  caseSensitive?: boolean;
+}
+```
+
+<ParamField body="limit" type="number">
+  Maximum number of matching entries to return.
+</ParamField>
+
+<ParamField body="caseSensitive" type="boolean">
+  Whether the query match is case-sensitive. Default is provider-specific.
+</ParamField>
+
+### AFSSearchResult
+
+```typescript
+interface AFSSearchResult {
+  data: AFSEntry[];
+  message?: string;
+}
+```
+
+<ResponseField name="data" type="AFSEntry[]">
+  Entries matching the search query.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional provider message.
+</ResponseField>
+
+---
+
+## stat
+
+### AFSStatOptions
+
+```typescript
+interface AFSStatOptions extends AFSOperationOptions {}
+```
+
+`AFSStatOptions` has no additional fields beyond the inherited `context`.
+
+### AFSStatResult
+
+```typescript
+interface AFSStatResult {
+  data?: Omit<AFSEntry, "content">;
+  message?: string;
+}
+```
+
+<ResponseField name="data" type="Omit<AFSEntry, 'content'> | undefined">
+  Entry metadata without `content`. Includes `id`, `path`, `meta`, `actions`, `summary`, `linkTo`, timestamps, and identity fields.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional message from the provider.
+</ResponseField>
+
+---
+
+## explain
+
+### AFSExplainOptions
+
+```typescript
+interface AFSExplainOptions extends AFSOperationOptions {
+  format?: "markdown" | "text";
+}
+```
+
+<ParamField body="format" type='"markdown" | "text"'>
+  Requested output format. Providers may ignore this and return their preferred format.
+</ParamField>
+
+### AFSExplainResult
+
+```typescript
+interface AFSExplainResult {
+  format: "markdown" | "text";
+  content: string;
+}
+```
+
+<ResponseField name="format" type='"markdown" | "text"'>
+  Actual format of the returned content.
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  Human- and LLM-readable description of the path.
+</ResponseField>
+
+---
+
+## exec
+
+### AFSExecOptions
+
+```typescript
+interface AFSExecOptions extends AFSOperationOptions {
+  onChunk?: (chunk: AFSExecChunk) => void;
+}
+```
+
+<ParamField body="onChunk" type="(chunk: AFSExecChunk) => void">
+  Optional streaming callback. The provider MAY call this incrementally during long-running executions.
+
+  <Expandable title="AFSExecChunk fields">
+    <ParamField body="text" type="string | undefined">
+      Incremental text content emitted by the provider.
+    </ParamField>
+
+    <ParamField body="thoughts" type="string | undefined">
+      Incremental reasoning or thinking content (for LLM-backed providers).
+    </ParamField>
+  </Expandable>
+
+  Additional provider-specific fields may appear on the chunk object.
+</ParamField>
+
+### AFSExecResult
+
+`AFSExecResult` extends `AFSActionResult` with no additional fields.
+
+```typescript
+interface AFSExecResult extends AFSActionResult {}
+
+interface AFSActionResult {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
+  usage?: UsageMetadata;
+}
+```
+
+<ResponseField name="success" type="boolean">
+  Whether the action completed successfully.
+</ResponseField>
+
+<ResponseField name="data" type="Record<string, unknown> | undefined">
+  Data returned by the action on success.
+</ResponseField>
+
+<ResponseField name="error" type="object | undefined">
+  Error information when `success` is `false`.
+
+  <Expandable title="error fields">
+    <ResponseField name="code" type="string">
+      Machine-readable error code (e.g., `"VALIDATION_ERROR"`, `"NOT_FOUND"`).
+    </ResponseField>
+
+    <ResponseField name="message" type="string">
+      Human-readable error message.
+    </ResponseField>
+
+    <ResponseField name="details" type="Record<string, unknown> | undefined">
+      Additional structured error details.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="usage" type="UsageMetadata | undefined">
+  Resource usage metadata for cost tracking and observability.
+
+  <Expandable title="UsageMetadata fields">
+    <ResponseField name="tokens" type="TokenUsage | undefined">
+      Token usage breakdown: `input`, `output`, `total` counts.
+    </ResponseField>
+
+    <ResponseField name="cost" type="number | undefined">
+      Monetary cost of the operation in provider-defined units.
+    </ResponseField>
+
+    <ResponseField name="durationMs" type="number | undefined">
+      Wall-clock duration in milliseconds.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Batch operations
+
+AFS also exposes batch write and batch delete types for bulk operations.
+
+### AFSBatchWriteEntry / AFSBatchWriteResult
+
+```typescript
+interface AFSBatchWriteEntry {
+  path: string;
+  content?: AFSWriteEntryPayload;
+  mode?: AFSWriteOptions["mode"];
+  patches?: AFSPatch[];
+}
+
+interface AFSBatchWriteResult {
+  results: AFSBatchWriteEntryResult[];
+  succeeded: number;
+  failed: number;
+}
+```
+
+### AFSBatchDeleteEntry / AFSBatchDeleteResult
+
+```typescript
+interface AFSBatchDeleteEntry {
+  path: string;
+  recursive?: boolean;
+}
+
+interface AFSBatchDeleteResult {
+  results: AFSBatchDeleteEntryResult[];
+  succeeded: number;
+  failed: number;
+}
+```

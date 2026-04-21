@@ -1,0 +1,207 @@
+---
+title: "@aigne/afs-sqlite: SQLite database as a filesystem"
+description: "Expose a SQLite database through AFS: tables become path directories, rows become readable files, FTS5 powers search, and raw SQL executes via exec actions."
+---
+
+`@aigne/afs-sqlite` turns a SQLite database into an AFS-navigable tree. The root lists every exposed table; each table is a directory whose children are individual rows. Full-text search (FTS5), schema introspection, and SQL execution are all available through the standard AFS interface.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-sqlite
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { SQLiteAFS } from "@aigne/afs-sqlite";
+
+const afs = new AFS();
+
+await afs.mount(
+  new SQLiteAFS({ url: "file:./data.db" }),
+  "/db",
+);
+
+// List tables
+const { data: tables } = await afs.list("/db");
+// [{ path: "/db/users", meta: { kind: "sqlite:table" } }, ...]
+
+// List rows in a table
+const { data: rows } = await afs.list("/db/users");
+
+// Read a single row by primary key
+const row = await afs.read("/db/users/1");
+console.log(row.data?.content);
+
+// Insert a row
+await afs.write("/db/users/new", {
+  content: { name: "Alice", email: "alice@example.com" },
+});
+
+// Full-text search
+const hits = await afs.search("/db/posts", "hello world");
+```
+
+## How SQLite maps to AFS paths
+
+```
+/                          ← root — lists all tables
+├── users/                 ← table (directory)
+│   ├── 1                  ← row with pk=1
+│   ├── 2                  ← row with pk=2
+│   └── ...
+├── posts/                 ← table
+│   ├── 42
+│   └── ...
+└── ...
+```
+
+Each row is serialised as JSON. Reading a row returns the full record as `content`.
+
+## Constructor options
+
+```typescript
+interface SQLiteAFSOptions {
+  /** SQLite file URL, e.g. "file:./data.db" or ":memory:". */
+  url?: string;
+  /** Cloudflare D1 database binding (Workers environment). */
+  d1?: unknown;
+  /** Pre-created drizzle SqliteDatabase instance. */
+  db?: SqliteDatabase;
+  /** Module name. Default: "sqlite-afs". */
+  name?: string;
+  /** Human-readable description. */
+  description?: string;
+  /** "readonly" or "readwrite". Default: "readwrite". */
+  accessMode?: "readonly" | "readwrite";
+  /** Whitelist of tables to expose (all tables exposed by default). */
+  tables?: string[];
+  /** Tables to exclude from exposure. */
+  excludeTables?: string[];
+  /** Full-text search (FTS5) configuration. */
+  fts?: {
+    enabled?: boolean;
+    /** Map of table name → columns to index. */
+    tables?: Record<string, string[]>;
+  };
+  /** Enable WAL mode for better write concurrency. Default: true. */
+  wal?: boolean;
+}
+```
+
+<Note>
+  One of `url`, `d1`, or `db` must be provided. `url: "file:./path.db"` is the most common choice for local development.
+</Note>
+
+## Operations
+
+### list
+
+At the root level, returns all exposed tables. Within a table, returns all rows (up to the default limit).
+
+```typescript
+const { data: tables } = await afs.list("/db");
+const { data: rows }   = await afs.list("/db/users");
+```
+
+### read
+
+Reads a single row by its path (which encodes the primary key).
+
+```typescript
+const { data } = await afs.read("/db/users/42");
+// data.content  — the row as a JSON object
+// data.meta     — table schema metadata
+```
+
+### write
+
+Inserts a new row or updates an existing one.
+
+```typescript
+// Insert (path ends with a new key)
+await afs.write("/db/users/new", {
+  content: { name: "Bob", email: "bob@example.com" },
+});
+
+// Update (path points to an existing row)
+await afs.write("/db/users/42", {
+  content: { email: "newemail@example.com" },
+});
+```
+
+### search
+
+Performs a full-text search across FTS5-indexed columns when FTS is enabled.
+
+```typescript
+await afs.mount(
+  new SQLiteAFS({
+    url: "file:./blog.db",
+    fts: {
+      enabled: true,
+      tables: { posts: ["title", "body"] },
+    },
+  }),
+  "/blog",
+);
+
+const hits = await afs.search("/blog/posts", "open source");
+```
+
+### exec — run a SQL query
+
+The SQLite provider exposes a `query` action at the root actions path.
+
+```typescript
+const result = await afs.exec("/db/.actions/query", {
+  sql: "SELECT COUNT(*) AS total FROM users WHERE active = 1",
+});
+console.log(result.data);
+// { rows: [{ total: 42 }] }
+```
+
+<Warning>
+  The `query` action executes arbitrary SQL. In production, always set `accessMode: "readonly"` to prevent write operations via exec.
+</Warning>
+
+### delete
+
+Deletes a row by its path.
+
+```typescript
+await afs.delete("/db/users/99");
+```
+
+### stat
+
+Returns table metadata without fetching row content.
+
+```typescript
+const { data } = await afs.stat("/db/users");
+// data.meta includes schema info and row count
+```
+
+## Schema introspection
+
+The provider automatically introspects the database schema using `PRAGMA table_info` and exposes column names, types, primary keys, and foreign keys through the `.meta` path of each table.
+
+```typescript
+const meta = await afs.read("/db/users/.meta");
+console.log(meta.data?.content);
+// { columns: [...], primaryKey: "id", foreignKeys: [...] }
+```
+
+## Cloudflare D1
+
+Pass a Cloudflare D1 binding directly to work inside Workers:
+
+```typescript
+const afs = new AFS();
+await afs.mount(
+  new SQLiteAFS({ d1: env.DB }),
+  "/db",
+);
+```

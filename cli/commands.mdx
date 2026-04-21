@@ -1,0 +1,780 @@
+---
+title: "AFS CLI command reference: ls, read, search, serve"
+description: "Every afs command documented with syntax, flags, defaults, and examples — file operations, mount management, HTTP/MCP serving, and interactive REPL."
+---
+
+The `afs` binary provides commands for file operations, mount management, serving, interactive exploration, and secret storage. All commands accept the global `--json`, `--yaml`, and `--view` flags described at the end of this page.
+
+<Note>
+  Commands marked with an alias (e.g. `list` / `ls`) accept either form interchangeably.
+</Note>
+
+## File operations
+
+<AccordionGroup>
+
+  <Accordion title="ls / list — list directory contents">
+
+    Lists the entries at a given path. Defaults to `/` when no path is supplied.
+
+    **Syntax**
+
+    ```bash
+    afs ls [path] [flags]
+    afs list [path] [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--depth` | number | `1` | Maximum depth to recurse |
+    | `-l` | boolean | `false` | Long listing format (detailed view) |
+    | `-R` | boolean | `false` | List recursively (equivalent to `--depth 10`) |
+    | `--limit` | number | — | Maximum number of entries to return |
+    | `--max-children` | number | — | Maximum children per directory node |
+    | `--pattern` | string | — | Glob pattern to filter entries |
+
+    **Examples**
+
+    ```bash
+    # List the root
+    afs ls /
+
+    # List a mounted directory
+    afs ls /src
+
+    # Recursive listing with long format
+    afs ls /src -R -l
+
+    # Filter entries by glob pattern
+    afs ls /src --pattern "*.ts"
+
+    # JSON output for scripting
+    afs ls /src --json
+    ```
+
+  </Accordion>
+
+  <Accordion title="read / cat — read file content">
+
+    Reads the content of a file or node at the given path.
+
+    **Syntax**
+
+    ```bash
+    afs read <path> [flags]
+    afs cat <path> [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--start-line` | number | — | First line to return (1-indexed, inclusive) |
+    | `--end-line` | number | — | Last line to return (1-indexed, inclusive). `-1` means end of file |
+
+    **Examples**
+
+    ```bash
+    # Read a full file
+    afs read /src/index.ts
+
+    # Read lines 10–50 only
+    afs read /src/index.ts --start-line 10 --end-line 50
+    ```
+
+  </Accordion>
+
+  <Accordion title="write — write content to a file">
+
+    Writes or modifies content at the given path. Content can be provided as an inline argument or via `--content`.
+
+    **Syntax**
+
+    ```bash
+    afs write <path> [content] [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--content` | string | — | Content to write |
+    | `--mode` | string | `replace` | Write mode: `replace`, `append`, `prepend`, `patch`, `create`, or `update` |
+    | `--patch` | string | — | JSON array of patch operations (required for `--mode patch`) |
+    | `--meta` | string[] | — | Set metadata fields as `key=value` pairs (repeatable) |
+
+    **Examples**
+
+    ```bash
+    # Replace a file's content
+    afs write /src/notes.txt "Updated notes"
+
+    # Append to an existing file
+    afs write /src/log.txt "new entry" --mode append
+
+    # Set metadata only (no content change)
+    afs write /src/file.ts --meta "status=reviewed" --meta "author=alice"
+    ```
+
+  </Accordion>
+
+  <Accordion title="delete / rm — delete a file or directory">
+
+    Deletes a file or directory at the given path.
+
+    **Syntax**
+
+    ```bash
+    afs delete <path> [flags]
+    afs rm <path> [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `-r`, `--recursive` | boolean | `false` | Delete directory and all its contents recursively |
+
+    **Examples**
+
+    ```bash
+    # Delete a single file
+    afs delete /src/old-file.ts
+
+    # Delete a directory recursively
+    afs delete /src/deprecated -r
+    ```
+
+  </Accordion>
+
+  <Accordion title="stat — get file or directory info">
+
+    Returns metadata about a file, directory, or node.
+
+    **Syntax**
+
+    ```bash
+    afs stat <path>
+    ```
+
+    **Examples**
+
+    ```bash
+    afs stat /src/index.ts
+    afs stat /src --json
+    ```
+
+  </Accordion>
+
+  <Accordion title="search / grep / find — search for content">
+
+    Searches for a query string within an AFS path. Provider support for search varies — not all providers implement this operation.
+
+    **Syntax**
+
+    ```bash
+    afs search <path> <query>
+    afs grep <path> <query>
+    afs find <path> <query>
+    ```
+
+    **Examples**
+
+    ```bash
+    # Search for "TODO" in the /src mount
+    afs search /src "TODO"
+
+    # Return results as JSON
+    afs search /src "interface AFSModule" --json
+    ```
+
+  </Accordion>
+
+  <Accordion title="exec — execute an action">
+
+    Executes an action on an AFS path. Actions are provider-specific executables exposed under `/.actions/` or directly as executable nodes.
+
+    The command dynamically reads the action's `inputSchema` and exposes named flags for each required parameter.
+
+    **Syntax**
+
+    ```bash
+    afs exec <action-path> [action-flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--args` | string | — | Pass all action arguments as a JSON object: `--args '{"key":"value"}'` |
+    | _(dynamic)_ | — | — | Flags derived from the action's `inputSchema` at runtime |
+
+    **Examples**
+
+    ```bash
+    # Execute a Git diff action
+    afs exec /repo/.actions/diff --branch main
+
+    # Pass arguments as a JSON blob
+    afs exec /db/.actions/query --args '{"sql":"SELECT * FROM users LIMIT 5"}'
+    ```
+
+  </Accordion>
+
+  <Accordion title="explain — explain a path or concept">
+
+    Explains an AFS path or concept. When passed a path, returns structured metadata about that node (type, description, provider, permissions, and for exec nodes: inputs, outputs, side effects). When passed a keyword like `mount`, `path`, or `uri`, explains the concept. With no argument, shows an overview of the current AFS setup.
+
+    **Syntax**
+
+    ```bash
+    afs explain [topic-or-path]
+    ```
+
+    **Available topics**
+
+    | Topic | Description |
+    |-------|-------------|
+    | _(none)_ | AFS overview |
+    | `mount` | Explains current mount configuration |
+    | `path` | Explains AFS path structure |
+    | `uri` | Lists all supported URI schemes |
+    | `<afs-path>` | Explains the node at that path |
+
+    **Examples**
+
+    ```bash
+    # Overview of current AFS setup
+    afs explain
+
+    # Explain a specific file
+    afs explain /src/index.ts
+
+    # Explain the URI system
+    afs explain uri
+
+    # Machine-readable output for agents
+    afs explain /src --json
+    ```
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Mount management
+
+<AccordionGroup>
+
+  <Accordion title="mount list / ls — list all mounts">
+
+    Lists all mounts defined in the current configuration.
+
+    **Syntax**
+
+    ```bash
+    afs mount list
+    afs mount ls
+    ```
+
+    **Examples**
+
+    ```bash
+    afs mount list
+    afs mount ls --json
+    ```
+
+  </Accordion>
+
+  <Accordion title="mount add — add a mount">
+
+    Adds a new mount to `.afs-config/config.toml`. Validates the URI, collects any required credentials, verifies the mount works, then persists the configuration.
+
+    **Syntax**
+
+    ```bash
+    afs mount add <path> <uri> [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--description` | string | — | Human-readable description for this mount |
+    | `--namespace` | string | — | Mount namespace for isolation |
+    | `--sensitive-args` | string[] | — | Field names to treat as sensitive credentials (stored in vault, not config) |
+    | `--set`, `-s` | string[] | — | Set credential values directly as `key=value` (repeatable, skips interactive prompt) |
+    | `--terminal` | boolean | — | Use terminal readline for credential input instead of browser |
+    | `--force`, `-f` | boolean | `false` | Force re-collection of credentials even if cached |
+
+    **Examples**
+
+    ```bash
+    # Mount a local filesystem directory
+    afs mount add /src fs:///Users/you/project/src
+
+    # Mount a Git repository
+    afs mount add /repo git:///path/to/repo?branch=main
+
+    # Mount a SQLite database
+    afs mount add /db sqlite:///path/to/app.db
+
+    # Mount with a description
+    afs mount add /docs fs:///Users/you/docs --description "Project documentation"
+
+    # Mount with credentials provided non-interactively
+    afs mount add /gh github://owner/repo --set token=ghp_abc123
+    ```
+
+  </Accordion>
+
+  <Accordion title="mount remove / rm — remove a mount">
+
+    Removes a mount from the configuration file.
+
+    **Syntax**
+
+    ```bash
+    afs mount remove <path>
+    afs mount rm <path>
+    ```
+
+    **Examples**
+
+    ```bash
+    afs mount remove /src
+    afs mount rm /old-db
+    ```
+
+  </Accordion>
+
+  <Accordion title="mount validate — validate mount configuration">
+
+    Validates all mounts in the current configuration without starting a server or loading data.
+
+    **Syntax**
+
+    ```bash
+    afs mount validate
+    ```
+
+    **Examples**
+
+    ```bash
+    afs mount validate
+    afs mount validate --json
+    ```
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Server
+
+<AccordionGroup>
+
+  <Accordion title="serve — start AFS server">
+
+    Starts a server exposing mounted AFS providers. The default transport is HTTP, but you can switch to MCP stdio or MCP HTTP with the `--transport` flag.
+
+    **Syntax**
+
+    ```bash
+    afs serve [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--transport` | string | `http` | Transport type: `http`, `mcp-stdio`, or `mcp-http` |
+    | `--host` | string | `localhost` | Host address to bind |
+    | `--port` | number | `3000` | Port to listen on |
+    | `--path` | string | `/afs` | Base path for the HTTP API |
+    | `--readonly` | boolean | `false` | Disable all write operations |
+    | `--cors` | boolean | `false` | Enable CORS headers (allows all origins) |
+
+    <Note>
+      Flag values override settings from `.afs-config/config.toml`. The resolution order is: **command-line flags → config file → defaults**.
+    </Note>
+
+    **HTTP transport**
+
+    Starts a Node.js HTTP server. All mounted providers are accessible at `http://<host>:<port><path>`.
+
+    ```bash
+    # Start with defaults (localhost:3000/afs)
+    afs serve
+
+    # Custom host and port
+    afs serve --host 0.0.0.0 --port 8080
+
+    # Read-only with CORS enabled
+    afs serve --readonly --cors
+
+    # Custom base path
+    afs serve --path /api/afs
+    ```
+
+    **MCP stdio transport**
+
+    Starts an MCP server on stdin/stdout. Use this to connect AFS to Claude Desktop, Cursor, or any MCP-compatible AI tool via the `stdio` connection type.
+
+    ```bash
+    afs serve --transport mcp-stdio
+    ```
+
+    Add to your MCP client configuration (example for Claude Desktop):
+
+    ```json
+    {
+      "mcpServers": {
+        "afs": {
+          "command": "afs",
+          "args": ["serve", "--transport", "mcp-stdio"]
+        }
+      }
+    }
+    ```
+
+    **MCP HTTP transport**
+
+    Starts an MCP server over streamable HTTP. Use this when you need to share one MCP server instance across multiple clients.
+
+    ```bash
+    afs serve --transport mcp-http --port 3001
+    ```
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Interactive and exploration
+
+<AccordionGroup>
+
+  <Accordion title="-i / --interactive — start the interactive REPL">
+
+    Opens an interactive shell (REPL) with Tab completion, path navigation, and access to all `afs` commands without the `afs` prefix.
+
+    **Syntax**
+
+    ```bash
+    afs -i
+    afs --interactive
+    ```
+
+    **REPL built-in commands**
+
+    | Command | Description |
+    |---------|-------------|
+    | `cd [path]` | Change the working directory within AFS |
+    | `pwd` | Print the current working directory |
+    | `help` | Show available commands |
+    | `clear` | Clear the terminal screen |
+    | `exit` / `quit` | Exit the REPL |
+
+    All regular `afs` commands (`ls`, `read`, `write`, `search`, etc.) work inside the REPL with paths resolved relative to the current directory. The `afs` prefix is optional inside the REPL.
+
+    **Examples**
+
+    ```bash
+    # Start the REPL
+    afs --interactive
+
+    # Inside the REPL:
+    # afs /> cd /src
+    # afs src> ls
+    # afs src> read index.ts
+    # afs src> search "TODO"
+    # afs src> exit
+    ```
+
+    <Tip>
+      Use Tab to complete both command names and AFS paths. Press Ctrl+D to exit.
+    </Tip>
+
+  </Accordion>
+
+  <Accordion title="explore — interactive TUI or web explorer">
+
+    Opens a visual explorer for the AFS namespace. By default, launches a full-screen terminal UI (TUI). With `--web`, starts a browser-based explorer instead.
+
+    **Syntax**
+
+    ```bash
+    afs explore [path] [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--web` | boolean | `false` | Launch the browser-based web explorer |
+    | `--port` | number | `0` | Port for the web explorer (`0` = auto-assign) |
+
+    **Examples**
+
+    ```bash
+    # Open TUI explorer at root
+    afs explore
+
+    # Open TUI explorer at a specific path
+    afs explore /src
+
+    # Open web explorer (auto port)
+    afs explore --web
+
+    # Open web explorer on a fixed port
+    afs explore --web --port 4000
+    ```
+
+    <Note>
+      The web explorer requires `@aigne/afs-explorer` to be installed. It is an optional peer dependency of `@aigne/afs-cli`.
+    </Note>
+
+  </Accordion>
+
+  <Accordion title="connect — start service and open web explorer">
+
+    A single-command shortcut that starts the AFS background service (if not already running) and opens the web explorer in your default browser.
+
+    **Syntax**
+
+    ```bash
+    afs connect [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--port` | number | `4900` | Port for the service |
+
+    **Examples**
+
+    ```bash
+    afs connect
+    afs connect --port 5000
+    ```
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Background service
+
+<AccordionGroup>
+
+  <Accordion title="service — manage the AFS background service">
+
+    Manages the AFS daemon process that runs in the background and exposes a full-featured server with REST API, WebSocket, MCP, and optional site portal endpoints.
+
+    **Syntax**
+
+    ```bash
+    afs service <action> [flags]
+    ```
+
+    **Actions**
+
+    | Action | Description |
+    |--------|-------------|
+    | `start` | Start the background service |
+    | `stop` | Stop the running service |
+    | `status` | Show service status, PID, port, and endpoints |
+    | `restart` | Stop then start the service |
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--port` | number | `4900` | Port for the service |
+
+    **Examples**
+
+    ```bash
+    # Start the background service
+    afs service start
+
+    # Check if the service is running
+    afs service status
+
+    # Restart with a custom port
+    afs service restart --port 5000
+
+    # Stop the service
+    afs service stop
+    ```
+
+    When running, the service exposes these endpoints:
+
+    | Endpoint | Description |
+    |----------|-------------|
+    | `http://host:port/` | AUP web client |
+    | `http://host:port/explorer` | Explorer UI |
+    | `http://host:port/ws` | WebSocket (Explorer) |
+    | `http://host:port/afs/*` | REST API |
+    | `http://host:port/mcp` | MCP Streamable HTTP |
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Secret vault
+
+<AccordionGroup>
+
+  <Accordion title="vault init — initialize the encrypted vault">
+
+    Creates a new encrypted vault file at `~/.afs-config/vault.enc`. If `credentials.toml` exists, its contents are migrated into the vault automatically.
+
+    **Syntax**
+
+    ```bash
+    afs vault init [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--path` | string | `~/.afs-config/vault.enc` | Custom vault file path |
+    | `--migrate` | boolean | `true` | Migrate existing `credentials.toml` into the vault |
+
+    **Examples**
+
+    ```bash
+    afs vault init
+    afs vault init --path /custom/path/vault.enc
+    ```
+
+  </Accordion>
+
+  <Accordion title="vault set — store a secret">
+
+    Stores a secret value in the vault under a named group.
+
+    **Syntax**
+
+    ```bash
+    afs vault set <group> <name> <value> [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--vault-path` | string | `~/.afs-config/vault.enc` | Path to the vault file |
+
+    **Examples**
+
+    ```bash
+    afs vault set github token ghp_abc123
+    afs vault set aws access-key-id AKIAIOSFODNN7EXAMPLE
+    ```
+
+  </Accordion>
+
+  <Accordion title="vault get — read a secret">
+
+    Reads a secret value from the vault.
+
+    **Syntax**
+
+    ```bash
+    afs vault get <group> <name> [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--vault-path` | string | `~/.afs-config/vault.enc` | Path to the vault file |
+
+    **Examples**
+
+    ```bash
+    afs vault get github token
+    afs vault get aws access-key-id
+    ```
+
+  </Accordion>
+
+  <Accordion title="vault list / ls — list secrets">
+
+    Lists secret paths in the vault. Omit `group` to list all groups.
+
+    **Syntax**
+
+    ```bash
+    afs vault list [group] [flags]
+    afs vault ls [group] [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--vault-path` | string | `~/.afs-config/vault.enc` | Path to the vault file |
+
+    **Examples**
+
+    ```bash
+    # List all groups
+    afs vault list
+
+    # List secrets in a specific group
+    afs vault list github
+    ```
+
+  </Accordion>
+
+  <Accordion title="vault delete / rm — delete a secret or group">
+
+    Deletes a single secret or an entire group from the vault.
+
+    **Syntax**
+
+    ```bash
+    afs vault delete <group> [name] [flags]
+    afs vault rm <group> [name] [flags]
+    ```
+
+    **Flags**
+
+    | Flag | Type | Default | Description |
+    |------|------|---------|-------------|
+    | `--vault-path` | string | `~/.afs-config/vault.enc` | Path to the vault file |
+
+    **Examples**
+
+    ```bash
+    # Delete a specific secret
+    afs vault delete github token
+
+    # Delete an entire group
+    afs vault delete aws
+    ```
+
+  </Accordion>
+
+</AccordionGroup>
+
+## Global flags
+
+These flags are available on every command:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | boolean | `false` | Output in JSON format |
+| `--yaml` | boolean | `false` | Output in YAML format |
+| `--view` | string | `default` | Output view: `default`, `llm`, or `human` |
+| `-i`, `--interactive` | boolean | `false` | Start interactive REPL mode |
+| `-h`, `--help` | boolean | — | Show help for a command |
+| `-v`, `--version` | boolean | — | Print the CLI version |
+
+<Tip>
+  When stdout is a TTY, the CLI defaults to `--view=human` automatically. In scripts and pipes, it defaults to `--view=default` (one path per line).
+</Tip>

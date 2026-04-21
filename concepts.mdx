@@ -1,0 +1,455 @@
+---
+title: "Core AFS concepts: entries, operations, mounts"
+description: "The AFS entry model, all 8 operations, the mount system, provider routing, access modes, and error types — with real TypeScript types."
+---
+
+AFS is built around four concepts: an **entry model** that every operation returns, **eight standard operations** that every provider implements (partially or fully), a **mount system** that composes providers into a single namespace, and a **routing layer** that resolves each path to the correct provider handler. This page explains each concept with the TypeScript types from the source.
+
+## The entry model
+
+Every AFS operation that returns data returns an `AFSEntry`. It is the atomic unit of AFS — a path resolves to one entry.
+
+```typescript
+interface AFSEntry<T = any> {
+  id: string;              // Provider-assigned unique identifier
+  path: string;            // Absolute path within the AFS namespace
+  content?: T;             // Entry payload — type varies by provider
+  meta?: AFSEntryMetadata; // Structural metadata (size, kind, childrenCount, …)
+  actions?: ActionSummary[]; // Available exec actions on this entry
+  summary?: string | null; // Short human/agent-readable description
+  linkTo?: string | null;  // AFS path this entry links/redirects to
+  createdAt?: Date;
+  updatedAt?: Date;
+  agentId?: string | null;
+  userId?: string | null;
+  sessionId?: string | null;
+}
+```
+
+### Entry metadata
+
+The `meta` field carries structural information about the entry. Providers populate whatever fields are available from the underlying data source.
+
+```typescript
+interface AFSEntryMetadata {
+  kind?: string;           // Primary type: "afs:node", "afs:leaf", "file", "directory", …
+  kinds?: string[];        // Inheritance chain, most specific first
+  childrenCount?: number;  // undefined = leaf, 0 = empty dir, N = exact, -1 = unknown
+  size?: number;           // Content size in bytes
+  description?: string;    // Human/agent-readable description
+  contentType?: string;    // MIME type for binary content
+  // … providers may add arbitrary additional fields
+}
+```
+
+<Tip>
+  The `childrenCount` field is the primary way to distinguish containers from leaves. `undefined` means the entry is a leaf (no children possible). `0` means an empty directory. `-1` means the entry has children but the count is not yet known (lazy loading).
+</Tip>
+
+### Actions on an entry
+
+An entry may expose a list of available actions in its `actions` field. Each action has a name, an optional description, an optional JSON Schema for inputs, and a severity level.
+
+```typescript
+interface ActionSummary {
+  name: string;             // Action identifier, e.g. "query", "refresh", "export"
+  description?: string;     // Human/agent-readable description
+  inputSchema?: JSONSchema7; // Input validation schema
+  severity?: ActionSeverity; // "ambient" | "boundary" | "critical"
+}
+```
+
+To call an action, use `afs.exec()` with the path `<entry-path>/.actions/<action-name>`.
+
+---
+
+## The 8 operations
+
+Every provider declares which operations it supports. Unsupported operations return clear errors rather than silently failing. The operations are:
+
+<AccordionGroup>
+
+<Accordion title="read — fetch entry content">
+
+Returns the entry at a path, including its `content` field.
+
+```typescript
+// Signature
+read(path: string, options?: AFSReadOptions): Promise<AFSReadResult>
+
+// Result shape
+interface AFSReadResult {
+  data?: AFSEntry;
+  message?: string;
+}
+
+// Example
+const { data } = await afs.read("/code/src/index.ts");
+console.log(data?.content); // file contents as string
+```
+
+`AFSReadOptions` supports `startLine` / `endLine` for line-range slicing, and `as` for requesting an alternative content representation.
+
+</Accordion>
+
+<Accordion title="write — create or update content">
+
+Creates or updates the entry at a path. The payload is an `AFSWriteEntryPayload` (an `AFSEntry` without `id` and `path`).
+
+```typescript
+// Signature
+write(path: string, content: AFSWriteEntryPayload, options?: AFSWriteOptions): Promise<AFSWriteResult>
+
+// Write modes
+type WriteMode = "replace" | "append" | "prepend" | "patch" | "create" | "update"
+
+// Result shape
+interface AFSWriteResult {
+  data: AFSEntry;
+  message?: string;
+}
+
+// Examples
+await afs.write("/code/out.txt", { content: "hello" });                        // replace (default)
+await afs.write("/code/log.txt", { content: "\nnew line" }, { mode: "append" });
+await afs.write("/code/new.ts", { content: "..." }, { mode: "create" });       // fails if exists
+```
+
+</Accordion>
+
+<Accordion title="list — list directory contents">
+
+Returns an array of child entries at a path.
+
+```typescript
+// Signature
+list(path: string, options?: AFSListOptions): Promise<AFSListResult>
+
+// Result shape
+interface AFSListResult {
+  data: AFSEntry[];
+  total?: number;  // total count if data is a subset (pagination)
+  message?: string;
+}
+
+// Options include maxDepth, limit, offset, pattern (glob), orderBy
+const { data: files } = await afs.list("/code/src", { maxDepth: 2 });
+const { data: tsFiles } = await afs.list("/code", { pattern: "**/*.ts" });
+```
+
+</Accordion>
+
+<Accordion title="delete — remove an entry">
+
+Removes the entry at a path. Supports `recursive` deletion for directories.
+
+```typescript
+// Signature
+delete(path: string, options?: AFSDeleteOptions): Promise<AFSDeleteResult>
+
+interface AFSDeleteOptions {
+  recursive?: boolean;
+}
+
+await afs.delete("/code/tmp.txt");
+await afs.delete("/code/build", { recursive: true });
+```
+
+</Accordion>
+
+<Accordion title="search — find content by query">
+
+Searches for entries whose content matches a query string. Results are provider-specific — full-text search for filesystem providers, SQL-like search for database providers.
+
+```typescript
+// Signature
+search(path: string, query: string, options?: AFSSearchOptions): Promise<AFSSearchResult>
+
+interface AFSSearchResult {
+  data: AFSEntry[];
+  message?: string;
+}
+
+const { data: results } = await afs.search("/code", "TODO");
+const { data: hits } = await afs.search("/git", "fix", { caseSensitive: false });
+```
+
+</Accordion>
+
+<Accordion title="stat — get metadata without content">
+
+Returns metadata for a path without fetching `content`. Useful for checking existence, size, and kind without downloading large payloads.
+
+```typescript
+// Signature
+stat(path: string, options?: AFSStatOptions): Promise<AFSStatResult>
+
+interface AFSStatResult {
+  data?: Omit<AFSEntry, "content">;
+  message?: string;
+}
+
+const { data } = await afs.stat("/code/data.csv");
+console.log(data?.meta?.size);  // size in bytes
+```
+
+</Accordion>
+
+<Accordion title="explain — get human/LLM-readable docs">
+
+Returns a natural-language description of what a path is and what operations it supports. Used by agents for self-discovery.
+
+```typescript
+// Signature
+explain(path: string, options?: AFSExplainOptions): Promise<AFSExplainResult>
+
+// Options
+interface AFSExplainOptions {
+  format?: "markdown" | "text";
+}
+
+const result = await afs.explain("/db");
+// Returns structured description of the SQLite provider at /db
+```
+
+</Accordion>
+
+<Accordion title="exec — execute a provider action">
+
+Executes a named action at a path. Actions are discovered via the `actions` field on entries or by listing `/.actions/`. Results carry a `success` flag and a `data` payload.
+
+```typescript
+// Signature
+exec(path: string, args: Record<string, unknown>, options?: AFSExecOptions): Promise<AFSExecResult>
+
+interface AFSExecResult {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: { code: string; message: string; details?: Record<string, unknown> };
+  usage?: UsageMetadata; // tokens, cost, durationMs
+}
+
+// Example: run a SQL query
+const result = await afs.exec("/db/.actions/query", { sql: "SELECT * FROM users LIMIT 10" });
+if (result.success) {
+  console.log(result.data);
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## The mount system
+
+Providers are mounted into AFS at specific path prefixes using `afs.mount()`. Multiple providers can be mounted at different paths to compose a unified namespace.
+
+```typescript
+const afs = new AFS();
+
+await afs.mount(new AFSFS({ localPath: "./src" }), "/code");
+await afs.mount(new AFSGit({ repoPath: "./repo" }), "/git");
+await afs.mount(new SQLiteAFS({ url: "file:./data.db" }), "/db");
+
+// All three providers are now accessible under one AFS instance
+await afs.read("/code/README.md");
+await afs.read("/git/main/src/index.ts");
+await afs.exec("/db/.actions/query", { sql: "SELECT count(*) FROM orders" });
+```
+
+`afs.mount()` is async. It runs a mount check — a `stat` or `list` on the provider root — to verify the provider is reachable before registering it. If the check fails or times out, an `AFSMountError` is thrown.
+
+<Note>
+  Each provider gets a `name` that must be unique within the AFS instance. AFS automatically generates the path `/modules/<name>` as a canonical reference, but you can mount at any path you choose.
+</Note>
+
+---
+
+## Provider routing
+
+When you call an operation like `afs.read("/git/main/src/index.ts")`, AFS resolves the path to the correct provider by matching the longest registered mount prefix. The matching portion is stripped, and the remainder is passed to the provider.
+
+For example, if `/git` is mounted with `AFSGit`, the call above strips `/git` and passes `/main/src/index.ts` to the Git provider's `read` handler.
+
+Within a provider, routing is handled by `ProviderRouter`. Each provider registers **route handlers** for path patterns using decorators:
+
+```typescript
+import { AFSBaseProvider, List, Read } from "@aigne/afs";
+import type { RouteContext } from "@aigne/afs";
+
+class BookProvider extends AFSBaseProvider {
+  name = "books";
+
+  @List("/")
+  async listBooks(ctx: RouteContext) {
+    return { data: [{ id: "/book-1", path: "/book-1", meta: { childrenCount: 0 } }] };
+  }
+
+  @Read("/:id")
+  async readBook(ctx: RouteContext<{ id: string }>) {
+    return { id: ctx.params.id, path: ctx.path, content: `Content for ${ctx.params.id}` };
+  }
+}
+```
+
+Pattern parameters (`:id`, `:table`, etc.) are extracted and placed in `ctx.params`. If no route matches an incoming path, the provider throws `AFSNotFoundError`.
+
+---
+
+## Access modes
+
+Every provider declares an access mode that controls which operations are permitted. The base class defaults to `"readonly"`.
+
+```typescript
+type AFSAccessMode = "readonly" | "create" | "append" | "readwrite";
+```
+
+| Mode | Permitted operations |
+|------|---------------------|
+| `readonly` | `read`, `list`, `search`, `stat`, `explain` |
+| `create` | `readonly` + `write(mode: "create")` only — no overwrite, no delete |
+| `append` | `create` + `write(mode: "append")` |
+| `readwrite` | All operations including `write`, `delete`, `exec`, `rename` |
+
+Attempting a write operation on a `readonly` provider throws `AFSReadonlyError`. Attempting an operation that exceeds the mount's `accessMode` throws `AFSAccessModeError`.
+
+```typescript
+// Explicit readwrite mount
+await afs.mount(
+  new AFSFS({ localPath: "./output", accessMode: "readwrite" }),
+  "/output",
+);
+```
+
+---
+
+## Error types
+
+AFS defines a hierarchy of typed errors. All errors extend `AFSError` and carry a `code` string.
+
+```typescript
+class AFSError extends Error {
+  readonly code: string; // machine-readable error code
+}
+```
+
+<AccordionGroup>
+
+<Accordion title="AFSNotFoundError — path does not exist">
+
+Thrown when an operation targets a path that does not resolve to an entry.
+
+```typescript
+class AFSNotFoundError extends AFSError {
+  readonly path: string; // the path that was not found
+  // code: "AFS_NOT_FOUND"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSReadonlyError — write on a readonly provider">
+
+Thrown when `write`, `delete`, `exec`, or `rename` is called on a provider whose `accessMode` is `"readonly"`.
+
+```typescript
+class AFSReadonlyError extends AFSError {
+  // code: "AFS_READONLY"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSAccessModeError — operation denied by access mode">
+
+Thrown when an operation is permitted by the provider but denied by the specific access mode of the mount (e.g., `write(replace)` on a `create`-only mount).
+
+```typescript
+class AFSAccessModeError extends AFSError {
+  readonly accessMode: string;   // the mount's access mode
+  readonly attemptedOp: string;  // the operation that was attempted
+  // code: "AFS_ACCESS_MODE"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSAlreadyExistsError — path exists in create mode">
+
+Thrown by `write(mode: "create")` when the target path already exists.
+
+```typescript
+class AFSAlreadyExistsError extends AFSError {
+  readonly path: string;
+  // code: "AFS_ALREADY_EXISTS"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSValidationError — input validation failed">
+
+Thrown when AFS Core validates exec inputs against an action's `inputSchema` and the validation fails.
+
+```typescript
+class AFSValidationError extends AFSError {
+  // code: "AFS_VALIDATION_ERROR"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSSeverityError — action severity exceeds policy">
+
+Thrown when an `exec` call targets an action whose severity level (`"ambient"`, `"boundary"`, or `"critical"`) exceeds the mount's `actionPolicy`.
+
+```typescript
+class AFSSeverityError extends AFSError {
+  readonly actionName: string;
+  readonly severity: string;
+  readonly policy: string;   // "safe" | "standard" | "full"
+  // code: "AFS_SEVERITY_DENIED"
+}
+```
+
+</Accordion>
+
+<Accordion title="AFSMountError — provider mount check failed">
+
+Thrown when `afs.mount()` cannot verify that a provider is reachable (timeout, stat failure, etc.).
+
+```typescript
+class AFSMountError extends AFSError {
+  readonly providerName: string;
+  readonly step: "stat" | "read" | "list" | "trust";
+  // code: "AFS_MOUNT_FAILED"
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Summary
+
+| Concept | Key type | Where defined |
+|---------|----------|---------------|
+| Entry model | `AFSEntry`, `AFSEntryMetadata` | `packages/core/src/type.ts` |
+| Operations | `AFSModule` interface | `packages/core/src/type.ts` |
+| Base provider | `AFSBaseProvider` | `packages/core/src/provider/base.ts` |
+| Mount / routing | `AFS.mount()`, `ProviderRouter` | `packages/core/src/afs.ts` |
+| Access modes | `AFSAccessMode` | `packages/core/src/type.ts` |
+| Errors | `AFSError` subclasses | `packages/core/src/error.ts` |
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    See all concepts in action with a working code example.
+  </Card>
+  <Card title="Build a provider" icon="wrench" href="/providers/custom">
+    Implement `AFSBaseProvider` and register route handlers with decorators.
+  </Card>
+</CardGroup>

@@ -1,0 +1,194 @@
+---
+title: "@aigne/afs-fs: local filesystem provider"
+description: "Mount any local directory into AFS with @aigne/afs-fs to read, write, search, stat, and delete files. Fast ripgrep-powered search included out of the box."
+---
+
+`@aigne/afs-fs` mounts a directory on your local disk as an AFS path. Every file and subdirectory in the mounted path becomes accessible through the standard AFS operations. Write operations create parent directories automatically, and search is powered by [ripgrep](https://github.com/BurntSushi/ripgrep) for fast content matching across large codebases.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-fs
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSFS({
+    localPath: "./my-project",
+    description: "Project source code",
+  }),
+  "/code",
+);
+
+// Read a file
+const result = await afs.read("/code/src/index.ts");
+console.log(result.data?.content);
+
+// List a directory
+const { data } = await afs.list("/code/src");
+for (const entry of data) {
+  console.log(entry.path, entry.meta?.kind);
+}
+
+// Search for content
+const hits = await afs.search("/code", "TODO");
+for (const hit of hits.data) {
+  console.log(hit.path, hit.summary);
+}
+```
+
+## Constructor options
+
+```typescript
+interface AFSFSOptions {
+  /** Absolute or relative path to the local directory to mount (required). */
+  localPath: string;
+  /** Human-readable description shown to agents in explain output. */
+  description?: string;
+  /** Custom mount name (defaults to the basename of localPath). */
+  name?: string;
+  /** "readonly" or "readwrite". Defaults to "readwrite". */
+  accessMode?: "readonly" | "readwrite";
+  /** Glob patterns to hide from listings and searches. */
+  ignore?: string[];
+  /** Respect .gitignore rules. Default: false. */
+  useGitignore?: boolean;
+  /** Respect .afsignore rules. Default: true. */
+  useAfsignore?: boolean;
+  /** Enable agent-skill scanning (.ash files). Defaults accessMode to "readonly". */
+  agentSkills?: boolean;
+}
+```
+
+<Note>
+  `localPath` is resolved relative to the current working directory when a relative path is supplied. The provider rejects any path traversal attempts that would escape the mounted root.
+</Note>
+
+## Operations
+
+### list
+
+Returns the immediate children of a directory. Pass `maxDepth` to recurse.
+
+```typescript
+const { data } = await afs.list("/code/src", { maxDepth: 3 });
+
+// Each entry has:
+// entry.path       — absolute AFS path
+// entry.meta.kind  — "fs:file" or "fs:directory"
+// entry.meta.size  — size in bytes (files only)
+// entry.meta.mimeType — MIME type (files only)
+// entry.meta.childrenCount — number of children (directories)
+```
+
+### read
+
+Returns the full content of a file.
+
+```typescript
+const result = await afs.read("/code/README.md");
+const { content, meta, createdAt, updatedAt } = result.data!;
+// meta.size    — bytes
+// meta.mimeType — e.g. "text/markdown"
+// For binary files: meta.contentType === "base64" and content is base64-encoded
+```
+
+### write
+
+Creates or replaces a file. Parent directories are created automatically.
+
+```typescript
+await afs.write("/code/notes.txt", {
+  content: "My notes",
+  summary: "Quick notes",
+  meta: { category: "personal" },
+});
+```
+
+### search
+
+Uses ripgrep to find files containing the query string.
+
+```typescript
+const { data } = await afs.search("/code", "TODO", {
+  caseSensitive: false,
+  limit: 50,
+});
+// data[n].summary contains the matching line snippet
+```
+
+### stat
+
+Returns metadata without reading file content.
+
+```typescript
+const { data } = await afs.stat("/code/package.json");
+// data.meta.size, data.updatedAt, etc.
+```
+
+### delete
+
+Removes a file or, with `recursive: true`, an entire directory tree.
+
+```typescript
+await afs.delete("/code/tmp/scratch.txt");
+await afs.delete("/code/tmp", { recursive: true });
+```
+
+### exec actions
+
+The filesystem provider exposes two built-in actions on any path:
+
+<Accordion title="archive — compress a directory">
+  Creates a `tar.gz` or `zip` archive of the directory contents and writes it to a temp file, returning the output path.
+
+  ```typescript
+  const result = await afs.exec("/code/.actions/archive", {
+    format: "tar.gz",         // "tar.gz" | "zip"
+    pattern: "**/*.ts",       // optional glob filter
+  });
+  console.log(result.data.outputPath, result.data.fileCount);
+  ```
+</Accordion>
+
+<Accordion title="checksum — hash a file">
+  Computes a cryptographic hash of a single file.
+
+  ```typescript
+  const result = await afs.exec("/code/src/index.ts/.actions/checksum", {
+    algorithm: "sha256",      // "md5" | "sha1" | "sha256" | "sha512"
+  });
+  console.log(result.data.hash);
+  ```
+</Accordion>
+
+## Mounting multiple directories
+
+You can mount as many `AFSFS` instances as needed at different paths:
+
+```typescript
+await afs.mount(new AFSFS({ localPath: "./src",    name: "src"    }), "/src");
+await afs.mount(new AFSFS({ localPath: "./tests",  name: "tests"  }), "/tests");
+await afs.mount(new AFSFS({ localPath: "./config", name: "config" }), "/config");
+
+await afs.list("/src");
+await afs.read("/config/app.json");
+await afs.search("/tests", "describe(");
+```
+
+## Ignore rules
+
+Files can be hidden from listings and searches using three mechanisms, applied in priority order:
+
+1. **Constructor `ignore` array** — highest priority, cannot be overridden.
+2. **`.afsignore`** — supports `@inherit .gitignore` to pull in gitignore rules.
+3. **`.gitignore`** — applied only when `useGitignore: true`.
+
+The hidden `.afs/` directory (used for metadata storage) is always excluded from listings.

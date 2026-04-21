@@ -1,0 +1,159 @@
+---
+title: "@aigne/afs-http: expose AFS over HTTP/REST"
+description: "Use @aigne/afs-http to serve any AFS instance as a JSON-RPC HTTP endpoint, or connect to a remote AFS server as a transparent in-process proxy client."
+---
+
+`@aigne/afs-http` has two complementary roles. The **handler** side creates a Web Standard `Request → Response` function that exposes any `AFSModule` as an HTTP endpoint. The **client** side (`AFSHttpClient`) implements the same `AFSModule` interface but forwards every call to a remote AFS HTTP server, acting as a transparent network proxy.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-http
+```
+
+## Serving AFS over HTTP
+
+`createAFSHttpHandler` returns a pure function that accepts a `Request` and returns a `Response`. It works with any HTTP framework that supports Web Standard APIs (Hono, Bun, Deno, etc.) and comes with built-in adapters for Express and Koa.
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+import { createAFSHttpHandler } from "@aigne/afs-http";
+
+const afs = new AFS();
+await afs.mount(new AFSFS({ localPath: "./data" }), "/files");
+
+// Create the handler
+const handler = createAFSHttpHandler({
+  module: afs,
+  maxBodySize: 10 * 1024 * 1024,  // 10 MB (default)
+  timeout: 30_000,                  // 30 s (default)
+  token: process.env.AFS_TOKEN,    // optional Bearer token auth
+});
+
+// Use with Bun
+Bun.serve({
+  fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname === "/afs/rpc") return handler(req);
+    return new Response("Not found", { status: 404 });
+  },
+});
+```
+
+### Handler options
+
+```typescript
+interface AFSHttpHandlerOptions {
+  /** The AFS module to expose. */
+  module: AFSModule;
+  /** Maximum request body size in bytes. Default: 10 MB. */
+  maxBodySize?: number;
+  /** Request timeout in milliseconds. Default: 30 000. */
+  timeout?: number;
+  /**
+   * Token validation for Bearer auth.
+   * - Omit for no auth (open access).
+   * - String: requests must carry a matching Bearer token.
+   * - Function: custom validator, returns true if valid.
+   */
+  token?: string | ((token: string) => boolean);
+}
+```
+
+### Express adapter
+
+```typescript
+import express from "express";
+import { createAFSHttpHandler, expressAdapter } from "@aigne/afs-http";
+
+const app = express();
+const handler = createAFSHttpHandler({ module: afs });
+
+app.post("/afs/rpc", expressAdapter(handler));
+app.listen(3000);
+```
+
+### Koa adapter
+
+```typescript
+import Koa from "koa";
+import { createAFSHttpHandler, koaAdapter } from "@aigne/afs-http";
+
+const app = new Koa();
+const handler = createAFSHttpHandler({ module: afs });
+
+app.use(koaAdapter("/afs/rpc", handler));
+app.listen(3000);
+```
+
+## Protocol
+
+The handler accepts `POST /afs/rpc` requests with a JSON body. All supported AFS operations (`list`, `read`, `write`, `delete`, `rename`, `search`, `exec`, `stat`, `explain`) are available as methods. Two wire formats are supported:
+
+**Transparent proxy format (preferred):**
+
+```json
+{ "method": "read", "args": ["/files/README.md", {}] }
+```
+
+**Legacy params format:**
+
+```json
+{ "method": "read", "params": { "path": "/files/README.md" } }
+```
+
+<Note>
+  The `Content-Type` header must be `application/json`. Requests without it are rejected with HTTP 400.
+</Note>
+
+## Connecting as a client
+
+`AFSHttpClient` wraps a remote AFS HTTP server and makes it look like a local `AFSModule`. Mount it like any other provider.
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSHttpClient } from "@aigne/afs-http";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSHttpClient({
+    url: "https://my-afs-server.example.com/afs/rpc",
+    token: process.env.REMOTE_TOKEN,
+  }),
+  "/remote",
+);
+
+// All operations are proxied transparently
+const file = await afs.read("/remote/data/report.csv");
+```
+
+### Client options
+
+```typescript
+interface AFSHttpClientOptions {
+  /** Base URL of the AFS HTTP endpoint. */
+  url: string;
+  /** Bearer token for authenticated endpoints. */
+  token?: string;
+  /** Custom HTTP headers to include on every request. */
+  headers?: Record<string, string>;
+  /** Retry configuration. */
+  retry?: RetryOptions;
+}
+```
+
+## SSRF protection
+
+The client validates the target URL with built-in SSRF protection. Requests to loopback addresses, link-local ranges, and private networks are blocked by default unless the application explicitly opts in.
+
+```typescript
+import { validateUrl } from "@aigne/afs-http";
+
+try {
+  validateUrl("http://169.254.169.254/latest/meta-data/");
+} catch (e) {
+  // throws SSRFError — blocked cloud metadata endpoint
+}
+```

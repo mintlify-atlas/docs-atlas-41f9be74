@@ -1,0 +1,408 @@
+---
+title: "AFS conformance: TypeScript suites and YAML runner"
+description: "How to verify AFS protocol compliance: TypeScript runProviderTests(), 21 test suites, and the YAML-driven runner for any HTTP server implementation."
+keywords: ["conformance", "testing", "runProviderTests", "afs-testing", "yaml", "provider", "compliance"]
+---
+
+AFS ships two complementary conformance tools: a TypeScript test harness (`@aigne/afs-testing`) for in-process provider testing, and a YAML-driven runner (`conformance/`) for verifying any HTTP server against the protocol, regardless of implementation language.
+
+## TypeScript provider testing
+
+### `runProviderTests()`
+
+The `@aigne/afs-testing` package exports `runProviderTests()` — the single entry point for TypeScript provider conformance. Import it in a `test/conformance.test.ts` file inside your provider package.
+
+```typescript
+import { runProviderTests } from "@aigne/afs-testing";
+import { MyProvider } from "../src/index.js";
+
+runProviderTests({
+  name: "MyProvider",
+  createProvider: () => new MyProvider({ /* config */ }),
+
+  structure: {
+    root: {
+      name: "",
+      children: [
+        { name: "hello.txt", content: "Hello, World!" },
+        { name: "data.json", content: { key: "value" } },
+        {
+          name: "docs",
+          children: [
+            { name: "readme.md", content: "# Test\nContent here" },
+          ],
+        },
+      ],
+    },
+  },
+});
+```
+
+<Note>
+Every provider must have a `test/conformance.test.ts` file. A provider without passing conformance tests is considered incomplete.
+</Note>
+
+### Fixture options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | string | Yes | Human-readable name shown in test output |
+| `createProvider` | `() => T \| Promise<T>` | Yes | Factory for a fresh provider instance |
+| `structure` | TestDataStructure | Yes | Tree describing the provider's pre-existing data shape |
+| `writeCases` | WriteTestCase[] | No | Custom write operation tests |
+| `actionCases` | ActionTestCase[] | No | Custom action tests (exec on `.actions` paths) |
+| `deleteCases` | DeleteTestCase[] | No | Custom delete tests |
+| `executeCases` | ExecuteTestCase[] | No | Custom exec tests (for tool/prompt providers) |
+| `expectResources` | boolean | No | Run `CapabilitiesResourceValidation` suite |
+| `expectUsage` | boolean | No | Run `ExecUsageMetadataValidation` suite |
+| `expectWriteModes` | boolean \| string | No | Run `WriteModesValidation` suite for all write modes |
+| `events` | `{ type, description? }[]` | No | Run `EventDeclarationValidation` suite |
+| `perception` | `{ readme?, entries? }` | No | Run `PerceptionPathValidation` suite |
+| `aup` | `{ path?, variants }` | No | Run `AupRecipeValidation` suite |
+| `providerClass` | object | No | Static class reference for `SecurityManifestValidation` and `TreeSchemaValidation` |
+| `playground` | function | No | Playground setup function (verified by `PlaygroundExistence` suite) |
+| `beforeAll` / `afterAll` | function | No | Lifecycle hooks |
+| `config.timeout` | number | No | Custom timeout for slow providers (ms) |
+
+### Structure declaration
+
+The `structure` field describes the provider's data using a tree. The root node uses an empty string name. Leaf nodes with `content` are files; nodes with `children` are directories.
+
+```typescript
+structure: {
+  root: {
+    name: "",
+    meta: { kind: "directory" },
+    children: [
+      { name: "file.txt", content: "text content" },
+      { name: "record.json", content: { id: 1, name: "Alice" } },
+      {
+        name: "subdir",
+        children: [
+          { name: "nested.md", content: "# Nested" },
+        ],
+      },
+    ],
+    actions: [
+      { name: "create-item", description: "Create a new item" },
+    ],
+  },
+},
+```
+
+### Write test cases
+
+```typescript
+writeCases: [
+  {
+    name: "append to existing file",
+    path: "/file.txt",
+    payload: { content: " more content" },
+    options: { mode: "append" },
+    expected: { contentContains: "more content" },
+  },
+  {
+    name: "create new entry",
+    path: "/new-entry.txt",
+    payload: { content: "created!" },
+    expected: { content: "created!" },
+  },
+],
+```
+
+### Action test cases
+
+```typescript
+actionCases: [
+  {
+    name: "create item succeeds",
+    path: "/.actions/create-item",
+    args: { name: "widget", type: "basic" },
+    expected: { success: true },
+  },
+  {
+    name: "create item with data",
+    path: "/.actions/create-item",
+    args: { name: "gadget" },
+    expected: { data: { id: "$exists" } },
+  },
+],
+```
+
+### Delete test cases
+
+```typescript
+deleteCases: [
+  {
+    name: "delete a file",
+    path: "/file-to-delete.txt",
+    verifyDeleted: true,
+  },
+],
+```
+
+---
+
+## Test suites
+
+`runProviderTests()` automatically runs the following suites. All 21 core suites always run; additional suites activate based on fixture options.
+
+### Always-run suites
+
+| Suite | Description |
+|-------|-------------|
+| `PlaygroundExistence` | Verifies `playground` setup function is provided |
+| `StructureValidation` | Verifies provider data matches the declared structure tree |
+| `ReadOperations` | Tests `read` on files, directories, nested paths, line ranges |
+| `SearchOperations` | Tests `search` returns results for known content |
+| `MetaOperations` | Tests `.meta` path returns capabilities manifest |
+| `ExplainOperations` | Tests `explain` returns meaningful output |
+| `AccessModeValidation` | Tests that `accessMode` restrictions are enforced |
+| `ErrorTypesValidation` | Tests that errors use correct `AFSError` subclasses |
+| `EntryFieldsValidation` | Tests that entries include required `id`, `path`, `meta` fields |
+| `ListOptionsValidation` | Tests `limit`, `offset`, `pattern`, `orderBy` options |
+| `PathNormalizationValidation` | Tests path normalization (trailing slashes, double slashes) |
+| `DeepListValidation` | Tests `maxDepth` recursive listing |
+| `NoHandlerValidation` | Tests that unsupported operations return clear errors |
+| `RouteParamsValidation` | Tests path parameter extraction for dynamic providers |
+| `MetadataRichnessValidation` | Tests that entries include `kind`, `description`, `size` |
+| `ExplainExistenceValidation` | Tests `explain` on both existing and nonexistent paths |
+| `CapabilitiesOperationsValidation` | Tests `/.meta/.capabilities` returns operation declarations |
+| `PathTraversalSecurity` | Tests that `../` path traversal is rejected |
+| `AccessBoundarySecurity` | Tests that providers cannot access paths outside their mount |
+| `ResourceExhaustionSecurity` | Tests behavior under large inputs and concurrent requests |
+| `InputInjectionSecurity` | Tests injection resistance in path and content parameters |
+| `SensitiveLeakSecurity` | Tests that sensitive fields are not leaked in error messages |
+| `ErrorInfoLeakSecurity` | Tests that errors do not expose internal stack traces |
+
+### Conditional suites
+
+| Suite | Activated by |
+|-------|--------------|
+| `ExecuteOperations` | `executeCases` provided |
+| `ActionOperations` | `actionCases` provided |
+| `WriteCaseOperations` | `writeCases` provided |
+| `DeleteCaseOperations` | `deleteCases` provided |
+| `WriteModesValidation` | `expectWriteModes: true` |
+| `CapabilitiesResourceValidation` | `expectResources: true` |
+| `ExecUsageMetadataValidation` | `expectUsage: true` + `executeCases` |
+| `EventDeclarationValidation` | `events` provided |
+| `PerceptionPathValidation` | `perception` provided |
+| `AupRecipeValidation` | `aup` provided |
+| `SecurityManifestValidation` | `providerClass` provided |
+| `TreeSchemaValidation` | `providerClass` provided |
+| `SymlinkEscapeSecurity` | `providerClass` provided |
+
+<Tip>
+Destructive tests (`WriteCaseOperations`, `ActionOperations`, `DeleteCaseOperations`, `WriteModesValidation`) always run last because they modify provider state.
+</Tip>
+
+---
+
+## YAML-driven conformance runner
+
+The `conformance/` directory contains a language-agnostic runner that sends JSON-RPC requests to any AFS HTTP server and validates responses against YAML spec files.
+
+### Running against a server
+
+```bash
+# Test a running server
+npx tsx conformance/src/runner.ts --url http://localhost:8080/rpc
+
+# Auto-launch the TypeScript reference implementation and test
+npx tsx conformance/src/runner.ts --launch
+
+# Test a specific level
+npx tsx conformance/src/runner.ts --url http://localhost:8080/rpc --level l1
+
+# Filter by spec name
+npx tsx conformance/src/runner.ts --url http://localhost:8080/rpc --filter read
+
+# Test AUP WebSocket specs
+npx tsx conformance/src/runner.ts --ws-url ws://localhost:8080/ws --specs conformance/specs/l2 --filter aup
+```
+
+**CLI options:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--url` | `-u` | — | Target AFS server RPC endpoint URL |
+| `--ws-url` | `-w` | — | Target WebSocket URL (for AUP/WS specs) |
+| `--specs` | `-s` | `specs` | Path to YAML spec files |
+| `--launch` | `-l` | false | Auto-launch TS reference server |
+| `--fixtures` | `-f` | `fixtures` | Fixtures directory for launched server |
+| `--filter` | — | — | Only run specs whose name contains this string |
+| `--level` | — | `all` | Run only `l1`–`l6`, or `all` |
+| `--help` | `-h` | — | Show help |
+
+---
+
+## Test levels
+
+Specs are organized into six levels. Each level builds on the previous.
+
+### L1 — Single-provider operations
+
+Tests the seven core read/write operations on a single provider. Any AFS provider implementation should pass L1.
+
+Spec files: `read.yaml`, `list.yaml`, `stat.yaml`, `write.yaml`, `delete.yaml`, `search.yaml`, `errors.yaml`
+
+| Spec | What it tests |
+|------|---------------|
+| `read.yaml` | Read existing files, not-found errors, JSON files, nested paths, line ranges |
+| `list.yaml` | List directories, pagination, glob patterns |
+| `stat.yaml` | Stat files, metadata presence, not-found behavior |
+| `write.yaml` | Create, replace, append, prepend, patch, create/update modes |
+| `delete.yaml` | Delete files and directories |
+| `search.yaml` | Full-text search, case sensitivity, scoped search |
+| `errors.yaml` | Error code values for common error conditions |
+
+### L2 — Multi-step workflows
+
+Tests sequences of operations that depend on each other: write-then-read, rename verification, delete verification, AUP session flows.
+
+Spec files: `write-read-cycle.yaml`, `delete-verify.yaml`, `rename-verify.yaml`, `search-after-write.yaml`, `write-modes.yaml`, `mount-composition.yaml`, `multi-step-workflows.yaml`, `cross-provider-search.yaml`, `aup-session.yaml`
+
+### L3 — Core compositor / mount routing
+
+Tests that the AFS compositor correctly routes operations to providers based on mount path prefixes, isolates mounts, and handles cross-mount search.
+
+Spec files: `mount-routing.yaml`, `cross-mount-isolation.yaml`, `cross-mount-search.yaml`, `root-list.yaml`
+
+Key behaviors verified:
+
+- Longest-prefix-match routing
+- Mount prefix stripping (provider receives relative path)
+- Writing to `/alpha` does not affect `/beta`
+- `list("/")` returns top-level mounts
+- `search("/")` fans out to all providers
+
+### L4 — Auto-explain generation
+
+Tests that the compositor auto-generates `explain` output for mounted providers and individual paths, including fallback to stat-based markdown when a provider doesn't implement `explain`.
+
+Spec files: `explain-mount.yaml`, `explain-actions.yaml`
+
+### L5 — Exec guard and action policy
+
+Tests that the compositor enforces action security: blocked actions are always rejected, severity levels are enforced against `actionPolicy`, and non-exec operations are unaffected.
+
+Spec files: `exec-guard-policy.yaml`, `blocked-actions.yaml`
+
+### L6 — Change propagation
+
+Tests that mutations are reflected consistently across the namespace: after `write`, `stat` returns the new file; after `delete`, `stat` returns not-found; `search("/")` reflects changes across all mounts.
+
+Spec files: `change-propagation.yaml`
+
+---
+
+## YAML spec format
+
+Each YAML file contains one or more test cases separated by `---`. A test case is either a **single operation** or a **multi-step sequence**.
+
+### Single operation
+
+```yaml
+name: "read - existing text file"
+operation: read
+params:
+  path: "/hello.txt"
+expect:
+  success: true
+  data:
+    data:
+      content: "Hello, World!"
+      path: "$exists"
+      meta:
+        size:
+          gte: 1
+```
+
+### Multi-step sequence
+
+```yaml
+name: "write then read - content persists"
+steps:
+  - name: write
+    operation: write
+    params:
+      path: "/test-file.txt"
+      content:
+        content: "test content"
+    expect:
+      success: true
+  - name: read back
+    operation: read
+    params:
+      path: "/test-file.txt"
+    expect:
+      success: true
+      data:
+        data:
+          content: "$contains:test content"
+  - name: cleanup
+    operation: delete
+    params:
+      path: "/test-file.txt"
+    expect:
+      success: true
+```
+
+### Assertion syntax
+
+| Syntax | Meaning |
+|--------|---------|
+| `"$exists"` | Field must be present and non-null |
+| `"$contains:text"` | String must contain `text` |
+| `{ type: "array" }` | Value must be an array |
+| `{ gte: 1 }` | Number must be >= 1 |
+| `{ contains: "text" }` | String must contain `text` (object form) |
+| Exact value | Deep equality match |
+
+### Operation names
+
+The `operation` field accepts: `read`, `list`, `stat`, `write`, `delete`, `search`, `exec`, `explain`, `rename`.
+
+For WebSocket-based specs (AUP sessions), add `transport: ws` at the top level of the spec document.
+
+---
+
+## Testing a custom HTTP server
+
+To test a non-TypeScript implementation, start your server and point the runner at it:
+
+<Steps>
+  <Step title="Implement the JSON-RPC endpoint">
+    Your server must expose `POST /rpc` accepting the AFS JSON-RPC format (see the [AFS Protocol reference](/reference/afs-protocol) for request/response shapes).
+  </Step>
+  <Step title="Populate test fixtures">
+    L1 specs expect specific files to exist (`/hello.txt`, `/data.json`, `/docs/readme.md`, etc.). Populate your server's data store with these fixtures before running.
+
+    ```bash
+    ls conformance/fixtures/
+    ```
+
+    The `fixtures/` directory contains the canonical test data for L1 specs.
+  </Step>
+  <Step title="Run the conformance suite">
+    ```bash
+    npx tsx conformance/src/runner.ts \
+      --url http://localhost:8080/rpc \
+      --level l1
+    ```
+
+    Start with L1 and progressively add higher levels as you implement more of the compositor.
+  </Step>
+  <Step title="Filter failing tests">
+    Use `--filter` to focus on a specific area:
+
+    ```bash
+    npx tsx conformance/src/runner.ts \
+      --url http://localhost:8080/rpc \
+      --filter "mount routing"
+    ```
+  </Step>
+</Steps>
+
+A fully compliant AFS Core implementation passes all L1–L6 conformance specs.

@@ -1,0 +1,529 @@
+---
+title: "AFS class: mount, read, write, exec API reference"
+description: "Complete API reference for the AFS class: constructor options, mount/unmount, and the read, write, list, delete, search, stat, explain, and exec methods."
+---
+
+The `AFS` class is the central coordinator of the Agentic File System. You instantiate it once, mount one or more providers, and then call its methods to read, write, list, search, or execute actions across all mounted providers through a unified path-based API. Every method is async and returns a typed result object.
+
+## Constructor
+
+```typescript
+import { AFS } from "@aigne/afs";
+
+const afs = new AFS(options?: AFSOptions);
+```
+
+<ParamField body="options" type="AFSOptions" required={false}>
+  Configuration object for the AFS instance.
+
+  <Expandable title="AFSOptions fields">
+    <ParamField body="modules" type="AFSModule[]">
+      Modules to mount immediately. Each module is mounted at `/modules/{module.name}` for backward compatibility.
+    </ParamField>
+
+    <ParamField body="onChange" type="(event: AFSChangeRecord) => void">
+      Listener called on mount, unmount, write, delete, and rename events.
+    </ParamField>
+
+    <ParamField body="isolationConfig" type="IsolationConfig">
+      Capability enforcement configuration. Controls isolation levels (`"none"` | `"audit"` | `"enforce"` | `"sandbox"` | `"docker"`) for mounted providers.
+    </ParamField>
+
+    <ParamField body="trust" type="{ config?: TrustConfig; issuers?: string[] }">
+      Trust configuration for mount-time verifiable credential (VC) verification.
+    </ParamField>
+
+    <ParamField body="onCapabilityEvent" type="CapabilityEventHandler">
+      Callback for capability audit and violation events.
+    </ParamField>
+
+    <ParamField body="resolveDataDir" type="(programPath: string) => string">
+      Resolve the filesystem data directory for a program. Injected by the CLI layer.
+    </ParamField>
+
+    <ParamField body="createDataProvider" type="(dataDir: string) => AFSModule | Promise<AFSModule>">
+      Create a data provider from a filesystem directory path. Injected by the CLI layer.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## mount
+
+Mount a provider at a path within the virtual filesystem.
+
+```typescript
+async mount(
+  module: AFSModule,
+  path?: string,
+  options?: MountOptions
+): Promise<this>
+```
+
+<ParamField body="module" type="AFSModule" required>
+  The provider instance to mount. Must have a unique `name` property.
+</ParamField>
+
+<ParamField body="path" type="string">
+  The virtual path to mount at. Defaults to `/modules/{module.name}` when omitted.
+</ParamField>
+
+<ParamField body="options" type="MountOptions">
+  Mount-time options.
+
+  <Expandable title="MountOptions fields">
+    <ParamField body="namespace" type="string | null">
+      Namespace to mount into. `null` or `undefined` uses the default namespace.
+    </ParamField>
+
+    <ParamField body="replace" type="boolean">
+      When `true`, replaces an existing mount at the same path instead of throwing.
+    </ParamField>
+
+    <ParamField body="lenient" type="boolean">
+      When `true`, mount-check failures are silently skipped instead of throwing.
+    </ParamField>
+
+    <ParamField body="trust" type="TrustLevel">
+      Per-mount trust level override. Takes precedence over global trust config.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+Returns `Promise<this>` so calls can be chained. An async health check runs in the background after mount returns; call `afs.check(path)` to await it explicitly.
+
+```typescript
+await afs.mount(provider, "/docs");
+await afs.mount(provider2, "/data", { replace: true });
+```
+
+<Warning>
+  Paths under `/registry`, `/.actions`, `/.meta`, and `/.as` are reserved and cannot be used as mount points.
+</Warning>
+
+## unmount
+
+Remove a mounted provider.
+
+```typescript
+unmount(path: string, namespace?: string | null): boolean
+```
+
+<ParamField body="path" type="string" required>
+  The virtual path to unmount.
+</ParamField>
+
+<ParamField body="namespace" type="string | null">
+  The namespace the mount lives in. Defaults to the default namespace when omitted.
+</ParamField>
+
+Returns `true` if a mount was found and removed, `false` if no mount existed at that path.
+
+```typescript
+const removed = afs.unmount("/docs");
+```
+
+## read
+
+Read a single entry at the given path.
+
+```typescript
+async read(path: string, options?: AFSReadOptions): Promise<AFSReadResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to read. Supports canonical `namespace:path` syntax and `.as/{value}` suffix for alternative representations.
+</ParamField>
+
+<ParamField body="options" type="AFSReadOptions">
+  <Expandable title="AFSReadOptions fields">
+    <ParamField body="startLine" type="number">
+      Start line (1-indexed, inclusive). Defaults to `1` when `endLine` is set.
+    </ParamField>
+
+    <ParamField body="endLine" type="number">
+      End line (1-indexed, inclusive). `-1` means end of file. Defaults to `-1` when `startLine` is set.
+    </ParamField>
+
+    <ParamField body="as" type="string">
+      Request an alternative representation (e.g., `"text"`, `"html"`). Equivalent to appending `.as/{value}` to the path.
+    </ParamField>
+
+    <ParamField body="filter" type="object">
+      Filter by `agentId`, `userId`, `sessionId`, `before`, or `after`.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context with optional `userId`, `sessionId`, `requestId`, and `logger`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+const result = await afs.read("/docs/README.md");
+console.log(result.data?.content);
+
+// Read lines 10–20 only
+const partial = await afs.read("/docs/README.md", { startLine: 10, endLine: 20 });
+```
+
+<ResponseField name="data" type="AFSEntry | undefined">
+  The entry at the requested path, or `undefined` if not found.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional message from the provider (e.g., a warning or error context).
+</ResponseField>
+
+## write
+
+Write or update an entry at the given path.
+
+```typescript
+async write(
+  path: string,
+  payload: AFSWriteEntryPayload,
+  options?: AFSWriteOptions
+): Promise<AFSWriteResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to write to.
+</ParamField>
+
+<ParamField body="payload" type="AFSWriteEntryPayload" required>
+  Content to write. Extends `AFSEntry` (minus `id` and `path`) and adds an optional `patches` field for `"patch"` mode.
+</ParamField>
+
+<ParamField body="options" type="AFSWriteOptions">
+  <Expandable title="AFSWriteOptions fields">
+    <ParamField body="mode" type='"replace" | "append" | "prepend" | "patch" | "create" | "update"'>
+      Write mode. Defaults to `"replace"`. `"create"` fails if the path already exists. `"update"` fails if the path does not exist.
+    </ParamField>
+
+    <ParamField body="as" type="string">
+      Write to an alternative representation of the content.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+await afs.write("/notes/todo.md", { content: "# Todo\n- item" });
+await afs.write("/notes/todo.md", { content: "\n- new item" }, { mode: "append" });
+```
+
+<ResponseField name="data" type="AFSEntry">
+  The entry as stored after the write.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional message from the provider.
+</ResponseField>
+
+## list
+
+List entries under a path.
+
+```typescript
+async list(path: string, options?: AFSListOptions): Promise<AFSListResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to list. Use `"/"` for the root.
+</ParamField>
+
+<ParamField body="options" type="AFSListOptions">
+  <Expandable title="AFSListOptions fields">
+    <ParamField body="maxDepth" type="number">
+      Maximum depth to recurse. `1` returns only direct children (default). `0` returns an empty array.
+    </ParamField>
+
+    <ParamField body="offset" type="number">
+      Number of entries to skip for pagination. Default `0`.
+    </ParamField>
+
+    <ParamField body="limit" type="number">
+      Maximum number of entries to return. Default `1000`.
+    </ParamField>
+
+    <ParamField body="pattern" type="string">
+      Glob pattern to filter entries by path (e.g., `"*.ts"`, `"**/*.{ts,tsx}"`).
+    </ParamField>
+
+    <ParamField body="orderBy" type="[string, 'asc' | 'desc'][]">
+      Sort order as an array of `[field, direction]` tuples.
+    </ParamField>
+
+    <ParamField body="filter" type="object">
+      Filter by `agentId`, `userId`, `sessionId`, `before`, or `after`.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+const { data } = await afs.list("/docs", { maxDepth: 2, pattern: "*.md" });
+```
+
+<ResponseField name="data" type="AFSEntry[]">
+  Array of entries found under the path.
+</ResponseField>
+
+<ResponseField name="total" type="number | undefined">
+  Total count when the result is a subset (pagination). When absent, `data.length` is the complete count.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional provider message.
+</ResponseField>
+
+## delete
+
+Delete an entry or directory at the given path.
+
+```typescript
+async delete(path: string, options?: AFSDeleteOptions): Promise<AFSDeleteResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to delete.
+</ParamField>
+
+<ParamField body="options" type="AFSDeleteOptions">
+  <Expandable title="AFSDeleteOptions fields">
+    <ParamField body="recursive" type="boolean">
+      When `true`, recursively delete a directory and all its contents.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+await afs.delete("/notes/old.md");
+await afs.delete("/notes/archive", { recursive: true });
+```
+
+<ResponseField name="message" type="string | undefined">
+  Optional confirmation or error message from the provider.
+</ResponseField>
+
+## search
+
+Search entries under a path for a query string.
+
+```typescript
+async search(
+  path: string,
+  query: string,
+  options?: AFSSearchOptions
+): Promise<AFSSearchResult>
+```
+
+<ParamField body="path" type="string" required>
+  Root path to search within.
+</ParamField>
+
+<ParamField body="query" type="string" required>
+  Search string to match against entries.
+</ParamField>
+
+<ParamField body="options" type="AFSSearchOptions">
+  <Expandable title="AFSSearchOptions fields">
+    <ParamField body="limit" type="number">
+      Maximum number of results to return.
+    </ParamField>
+
+    <ParamField body="caseSensitive" type="boolean">
+      Whether the search is case-sensitive. Default is provider-specific.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+const { data } = await afs.search("/docs", "authentication", { limit: 20 });
+```
+
+<ResponseField name="data" type="AFSEntry[]">
+  Entries matching the query.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional provider message.
+</ResponseField>
+
+## stat
+
+Get metadata for a path without reading its content.
+
+```typescript
+async stat(path: string, options?: AFSStatOptions): Promise<AFSStatResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to stat.
+</ParamField>
+
+<ParamField body="options" type="AFSStatOptions">
+  Accepts a `context` field (`AFSContext`). No additional fields beyond the base operation options.
+</ParamField>
+
+```typescript
+const { data } = await afs.stat("/docs/README.md");
+console.log(data?.meta?.size);
+```
+
+<ResponseField name="data" type="Omit<AFSEntry, 'content'> | undefined">
+  Entry metadata without content, or `undefined` if not found.
+</ResponseField>
+
+<ResponseField name="message" type="string | undefined">
+  Optional provider message.
+</ResponseField>
+
+## explain
+
+Get a human- and LLM-readable explanation for a path.
+
+```typescript
+async explain(path: string, options?: AFSExplainOptions): Promise<AFSExplainResult>
+```
+
+<ParamField body="path" type="string" required>
+  Virtual path to explain.
+</ParamField>
+
+<ParamField body="options" type="AFSExplainOptions">
+  <Expandable title="AFSExplainOptions fields">
+    <ParamField body="format" type='"markdown" | "text"'>
+      Output format for the explanation. Default is provider-specific.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+const result = await afs.explain("/docs");
+console.log(result.content);
+```
+
+<ResponseField name="format" type='"markdown" | "text"'>
+  The format of the returned content.
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  Human- and LLM-readable description of the path.
+</ResponseField>
+
+## exec
+
+Execute an action at a path.
+
+```typescript
+async exec(
+  path: string,
+  args: Record<string, unknown>,
+  options?: AFSExecOptions
+): Promise<AFSExecResult>
+```
+
+<ParamField body="path" type="string" required>
+  Path to the action, typically of the form `/{resource}/.actions/{action-name}`.
+</ParamField>
+
+<ParamField body="args" type="Record<string, unknown>" required>
+  Arguments to pass to the action. Must conform to the action's `inputSchema`.
+</ParamField>
+
+<ParamField body="options" type="AFSExecOptions">
+  <Expandable title="AFSExecOptions fields">
+    <ParamField body="onChunk" type="(chunk: AFSExecChunk) => void">
+      Optional callback for incremental streaming output. The provider MAY call this with partial results during execution.
+    </ParamField>
+
+    <ParamField body="context" type="AFSContext">
+      Execution context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+const result = await afs.exec("/vehicle/.actions/lock", { confirm: true });
+if (result.success) {
+  console.log(result.data);
+}
+```
+
+<ResponseField name="success" type="boolean">
+  Whether the action completed successfully.
+</ResponseField>
+
+<ResponseField name="data" type="Record<string, unknown> | undefined">
+  Data returned by the action on success.
+</ResponseField>
+
+<ResponseField name="error" type="object | undefined">
+  Error details when `success` is `false`. Contains `code` (string), `message` (string), and optional `details`.
+</ResponseField>
+
+<ResponseField name="usage" type="UsageMetadata | undefined">
+  Token usage, cost, and duration metadata for LLM-based actions.
+</ResponseField>
+
+## check
+
+Explicitly await the async health check for a mounted provider.
+
+```typescript
+async check(path: string, namespace?: string | null): Promise<void>
+```
+
+Throws `AFSMountError` if the health check failed. Use this for fail-fast credential retry logic after calling `mount`.
+
+```typescript
+await afs.mount(provider, "/api");
+await afs.check("/api"); // throws AFSMountError if provider is unreachable
+```
+
+## getMounts
+
+Return information about all currently mounted providers.
+
+```typescript
+getMounts(namespace?: string | null): MountInfo[]
+```
+
+<ResponseField name="namespace" type="string | null">
+  The namespace this mount belongs to.
+</ResponseField>
+
+<ResponseField name="path" type="string">
+  The virtual path of this mount.
+</ResponseField>
+
+<ResponseField name="module" type="AFSModule">
+  The mounted provider instance.
+</ResponseField>
+
+<ResponseField name="status" type='"checking" | "ready" | "error"'>
+  Health check status of the mount.
+</ResponseField>
+
+<ResponseField name="error" type="AFSMountError | undefined">
+  Set when `status` is `"error"`.
+</ResponseField>

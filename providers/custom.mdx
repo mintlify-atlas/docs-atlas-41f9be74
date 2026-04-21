@@ -1,0 +1,274 @@
+---
+title: "Build a custom AFS provider with decorators"
+description: "Extend AFSBaseProvider and annotate handler methods with @Read, @Write, @List, @Delete, @Search, @Stat, @Explain, and @Actions.Exec to expose any data source."
+---
+
+Any data source — an in-memory cache, a REST API, a proprietary database — can become an AFS provider. You extend `AFSBaseProvider`, declare `name` and optionally `accessMode`, then annotate methods with route decorators. AFS handles path matching, error propagation, and depth-based BFS expansion automatically.
+
+## Minimal example
+
+```typescript
+import {
+  AFS,
+  AFSBaseProvider,
+  AFSNotFoundError,
+  List,
+  Read,
+  type RouteContext,
+} from "@aigne/afs";
+
+class GreetingProvider extends AFSBaseProvider {
+  name = "greetings";
+
+  private data = new Map([
+    ["alice", "Hello, Alice!"],
+    ["bob",   "Hello, Bob!"],
+  ]);
+
+  @List("/")
+  async listAll() {
+    const entries = Array.from(this.data.keys()).map((id) =>
+      this.buildEntry(`/${id}`, { content: this.data.get(id) }),
+    );
+    return { data: entries };
+  }
+
+  @Read("/:name")
+  async readOne(ctx: RouteContext<{ name: string }>) {
+    const msg = this.data.get(ctx.params.name);
+    if (!msg) throw new AFSNotFoundError(ctx.path);
+    return this.buildEntry(ctx.path, { content: msg });
+  }
+}
+
+const afs = new AFS();
+await afs.mount(new GreetingProvider(), "/hello");
+
+const alice = await afs.read("/hello/alice");
+console.log(alice.data?.content); // "Hello, Alice!"
+```
+
+## The full decorator API
+
+| Decorator | Operation | Handler signature |
+|-----------|-----------|-------------------|
+| `@List(pattern)` | `list` | `(ctx) → { data: AFSEntry[] }` |
+| `@Read(pattern)` | `read` | `(ctx) → AFSEntry \| undefined` |
+| `@Write(pattern)` | `write` | `(ctx, payload: AFSWriteEntryPayload) → { data: AFSEntry }` |
+| `@Delete(pattern)` | `delete` | `(ctx) → { message: string }` |
+| `@Search(pattern)` | `search` | `(ctx, query, opts?) → { data: AFSEntry[] }` |
+| `@Stat(pattern)` | `stat` | `(ctx) → AFSStatResult` |
+| `@Explain(pattern)` | `explain` | `(ctx) → AFSExplainResult` |
+| `@Meta(pattern)` | `read` on `<pattern>/.meta` | `(ctx) → AFSEntry` |
+| `@Actions(pattern)` | `list` on `<pattern>/.actions` | `(ctx) → { data: AFSEntry[] }` |
+| `@Actions.Exec(pattern, name?)` | `exec` on `<pattern>/.actions/<name>` | `(ctx, args) → AFSExecResult` |
+
+## RouteContext
+
+Every handler receives a `RouteContext` as its first argument.
+
+```typescript
+interface RouteContext<Params = Record<string, string>> {
+  /** The matched path (relative to the provider root). */
+  path: string;
+  /** Named segments extracted from the route pattern. */
+  params: Params;
+  /** Operation-specific options passed by the caller. */
+  options?: unknown;
+}
+```
+
+Pattern segments follow [URLPattern](https://developer.mozilla.org/en-US/docs/Web/API/URL_Pattern_API) syntax:
+
+| Pattern | Example match | `ctx.params` |
+|---------|---------------|--------------|
+| `/:id` | `/book-1` | `{ id: "book-1" }` |
+| `/:table/:pk` | `/users/42` | `{ table: "users", pk: "42" }` |
+| `/:path+` | `/a/b/c` | `{ path: "a/b/c" }` |
+| `/:path*` | `/` or `/a/b` | `{ path: undefined \| "a/b" }` |
+
+## Complete book catalog example
+
+This is the full working example from the AFS repository. It shows list, read, meta, stat, explain, capabilities, and a custom search action.
+
+```typescript
+import {
+  Actions,
+  AFS,
+  AFSBaseProvider,
+  AFSNotFoundError,
+  Explain,
+  List,
+  Meta,
+  Read,
+  type RouteContext,
+  Stat,
+} from "@aigne/afs";
+
+interface BookRecord {
+  title: string;
+  author: string;
+  year: number;
+  description: string;
+}
+
+export class BookProvider extends AFSBaseProvider {
+  name = "book-catalog";
+  description = "In-memory book catalog";
+  override readonly accessMode = "readwrite" as const;
+
+  private books: Map<string, BookRecord>;
+
+  constructor(books: BookRecord[]) {
+    super();
+    this.books = new Map(books.map((b, i) => [`book-${i + 1}`, b]));
+  }
+
+  @List("/")
+  async listBooks() {
+    const data = Array.from(this.books.entries()).map(([id, book]) =>
+      this.buildEntry(`/${id}`, {
+        content: `${book.title} by ${book.author}`,
+        meta: { title: book.title, author: book.author, year: book.year },
+      }),
+    );
+    return { data };
+  }
+
+  @List("/:id")
+  async listBook(ctx: RouteContext<{ id: string }>) {
+    const book = this.books.get(ctx.params.id);
+    if (!book) throw new AFSNotFoundError(ctx.path);
+    return { data: [] }; // leaf node — no children
+  }
+
+  @Read("/")
+  async readRoot() {
+    return this.buildEntry("/", {
+      content: `Book catalog with ${this.books.size} books.`,
+      meta: { childrenCount: this.books.size },
+    });
+  }
+
+  @Read("/:id")
+  async readBook(ctx: RouteContext<{ id: string }>) {
+    const book = this.books.get(ctx.params.id);
+    if (!book) throw new AFSNotFoundError(ctx.path);
+    return this.buildEntry(ctx.path, {
+      content: `${book.title}\nby ${book.author} (${book.year})\n\n${book.description}`,
+      meta: { title: book.title, author: book.author, year: book.year },
+    });
+  }
+
+  @Meta("/")
+  async metaRoot() {
+    return this.buildEntry("/.meta", {
+      meta: { catalog: "books", totalBooks: this.books.size },
+    });
+  }
+
+  @Meta("/:id")
+  async metaBook(ctx: RouteContext<{ id: string }>) {
+    const book = this.books.get(ctx.params.id);
+    if (!book) throw new AFSNotFoundError(ctx.path);
+    return this.buildEntry(ctx.path, {
+      meta: { title: book.title, author: book.author, year: book.year },
+    });
+  }
+
+  @Stat("/")
+  async statRoot() {
+    return { data: { path: "/", meta: { childrenCount: this.books.size }, size: 0 } };
+  }
+
+  @Stat("/:id")
+  async statBook(ctx: RouteContext<{ id: string }>) {
+    const book = this.books.get(ctx.params.id);
+    if (!book) throw new AFSNotFoundError(ctx.path);
+    const content = `${book.title} by ${book.author}`;
+    return { data: { path: ctx.path, meta: { ...book }, size: content.length } };
+  }
+
+  @Read("/.meta/.capabilities")
+  async readCapabilities() {
+    return {
+      id: "/.meta/.capabilities",
+      path: "/.meta/.capabilities",
+      content: { operations: this.getOperationsDeclaration() },
+      meta: { kind: "afs:capabilities" },
+    };
+  }
+
+  @Explain("/")
+  async explainRoot() {
+    const titles = Array.from(this.books.values())
+      .map((b) => `- ${b.title} (${b.year})`)
+      .join("\n");
+    return {
+      format: "markdown" as const,
+      content: `# Book Catalog\n\n${this.books.size} books:\n\n${titles}`,
+    };
+  }
+
+  @Explain("/:id")
+  async explainBook(ctx: RouteContext<{ id: string }>) {
+    const book = this.books.get(ctx.params.id);
+    if (!book) throw new AFSNotFoundError(ctx.path);
+    return {
+      format: "markdown" as const,
+      content: `# ${book.title}\n\nBy ${book.author} (${book.year})\n\n${book.description}`,
+    };
+  }
+
+  @Actions.Exec("/", "search")
+  async searchBooks(_ctx: RouteContext, args: { query: string }) {
+    const q = (args.query || "").toLowerCase();
+    const matches = Array.from(this.books.entries())
+      .filter(([, b]) => b.title.toLowerCase().includes(q) || b.author.toLowerCase().includes(q))
+      .map(([id, b]) => ({ id, title: b.title, author: b.author }));
+    return { data: { results: matches, total: matches.length } };
+  }
+}
+```
+
+## Mounting and using the provider
+
+```typescript
+const afs = new AFS();
+const provider = new BookProvider([
+  { title: "The Pragmatic Programmer", author: "David Thomas", year: 1999,
+    description: "From journeyman to master." },
+  { title: "Designing Data-Intensive Applications", author: "Martin Kleppmann", year: 2017,
+    description: "Reliable, scalable systems." },
+]);
+
+await afs.mount(provider, "/books");
+
+// List all books
+const { data } = await afs.list("/books");
+
+// Read one book
+const book = await afs.read("/books/book-1");
+
+// Execute the custom search action
+const results = await afs.exec("/books/.actions/search", { query: "pragmatic" });
+console.log(results.data.total, results.data.results);
+
+// Stat and explain
+const stat = await afs.stat("/books/book-1");
+const doc  = await afs.explain("/books");
+```
+
+## Tips
+
+<Tip>
+  Use `this.buildEntry(path, options)` (inherited from `AFSBaseProvider`) to construct well-formed `AFSEntry` objects without manually filling every field.
+</Tip>
+
+<Note>
+  Throw `AFSNotFoundError(path)` (imported from `@aigne/afs`) to return a standard 404-equivalent response. AFS maps it to the correct error code for HTTP, MCP, and CLI clients automatically.
+</Note>
+
+<Warning>
+  If your provider exposes write operations, set `override readonly accessMode = "readwrite" as const` on the class. The default is `"readonly"` and AFS will reject write calls without this override.
+</Warning>

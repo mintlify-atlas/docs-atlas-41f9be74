@@ -1,0 +1,203 @@
+---
+title: "@aigne/afs-ui: render web UI via Agent UI Protocol"
+description: "Write AUP node trees to session paths and AFS-UI pushes them to a connected browser over WebSocket — no HTML templates, no client framework required."
+---
+
+`@aigne/afs-ui` is an AFS provider that turns browser sessions into AFS paths. An agent writes a declarative UI tree (an AUP node tree) to a session path and the browser renders it instantly over WebSocket. Events from the browser — button clicks, form submissions — come back as `exec` calls on the same session path. There is no separate UI SDK; everything goes through the standard AFS interface.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-ui
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSUIProvider, WebBackend } from "@aigne/afs-ui";
+
+// 1. Start the web server
+const backend = new WebBackend({ port: 3210 });
+await backend.listen();
+
+// 2. Mount the UI provider
+const provider = new AFSUIProvider({ backend });
+const afs = new AFS();
+await afs.mount(provider, "/ui");
+
+// 3. Wait for a browser to connect
+const sessionId = await new Promise<string>((resolve) => {
+  const poll = setInterval(() => {
+    const sessions = provider.sessions.list("web");
+    if (sessions.length > 0) {
+      clearInterval(poll);
+      resolve(sessions[0]!.id);
+    }
+  }, 100);
+});
+
+// 4. Render a page by writing a tree
+await afs.write(`/ui/web/sessions/${sessionId}/tree`, {
+  content: {
+    id: "root",
+    type: "view",
+    children: [
+      {
+        id: "heading",
+        type: "text",
+        props: { content: "Hello, AUP!", level: 1 },
+      },
+      {
+        id: "body",
+        type: "text",
+        props: {
+          content: "This page is rendered by an AFS agent.",
+          format: "markdown",
+        },
+      },
+    ],
+  },
+  meta: { fullPage: true, style: "midnight" },
+});
+```
+
+Open `http://127.0.0.1:3210` in your browser to see the result.
+
+## Provider options
+
+```typescript
+interface AFSUIProviderOptions {
+  /** Mount name. Default: "ui". */
+  name?: string;
+  /** Human-readable description. */
+  description?: string;
+  /** Backend type: "tty" | "web" | "term" or a custom UIBackend. */
+  backend?: "tty" | "web" | "term" | UIBackend;
+  /** Options for the TTY backend. */
+  ttyOptions?: TTYBackendOptions;
+  /** Options for the web backend. */
+  webOptions?: WebBackendOptions;
+  /** Options for the terminal backend. */
+  termOptions?: TermBackendOptions;
+  /** Input timeout in ms (0 = no timeout). */
+  inputTimeout?: number;
+  /** Directory to persist pages. Default: ".afs-ui/pages". Set false to disable. */
+  pagesDir?: string | false;
+  /** Directory to persist session state. Default: ".afs-ui/sessions". Set false to disable. */
+  sessionsDir?: string | false;
+  /** Max inactive ms before session GC. Default: 30 minutes. */
+  sessionMaxInactiveMs?: number;
+}
+```
+
+## Writing a UI tree
+
+The content written to `/<mount>/web/sessions/<id>/tree` must be an AUP node. Every node has an `id`, a `type`, optional `props`, and optional `children`.
+
+```typescript
+const tree = {
+  id: "root",
+  type: "view",
+  props: { layout: "column" },
+  children: [
+    {
+      id: "title",
+      type: "text",
+      props: { content: "Dashboard", level: 1 },
+    },
+    {
+      id: "stats",
+      type: "view",
+      props: { layout: "row" },
+      children: [
+        { id: "s1", type: "text", props: { content: "42 users",  mode: "badge" } },
+        { id: "s2", type: "text", props: { content: "Online",    mode: "badge" } },
+      ],
+    },
+    {
+      id: "btn",
+      type: "action",
+      props: { label: "Refresh", action: "refresh" },
+    },
+  ],
+};
+
+await afs.write(`/ui/web/sessions/${sessionId}/tree`, {
+  content: tree,
+  meta: { fullPage: true },
+});
+```
+
+## Live patching
+
+Instead of replacing the whole tree you can send incremental patches using the `aup_patch` action:
+
+```typescript
+await afs.exec(`/ui/web/sessions/${sessionId}/.actions/aup_patch`, {
+  ops: [
+    {
+      op: "update",
+      id: "title",
+      props: { content: `Dashboard — ${new Date().toLocaleTimeString()}` },
+    },
+    {
+      op: "create",
+      parentId: "stats",
+      node: { id: "s3", type: "text", props: { content: "3 errors", mode: "badge" } },
+    },
+  ],
+});
+```
+
+Patch operation types: `update`, `create`, `remove`, `reorder`.
+
+## Receiving browser events
+
+When a user interacts with action nodes (buttons, inputs, etc.) the browser sends an event back to the server. AFS-UI delivers it as an `exec` call on the session's events path.
+
+```typescript
+// The framework calls this when an event arrives
+// You can subscribe by polling or using provider.sessions.on(...)
+const result = await afs.exec(
+  `/ui/web/sessions/${sessionId}/.actions/send_event`,
+  { action: "refresh", data: {} },
+);
+```
+
+## Backend types
+
+<Accordion title="WebBackend — browser over WebSocket">
+  The standard backend. Serves the AUP web client from an HTTP/WebSocket server.
+
+  ```typescript
+  import { WebBackend } from "@aigne/afs-ui";
+
+  const backend = new WebBackend({ port: 3210 });
+  await backend.listen();
+  ```
+</Accordion>
+
+<Accordion title="TermBackend — terminal rendering">
+  Renders the AUP tree as a rich terminal UI using a terminal renderer.
+
+  ```typescript
+  import { TermBackend } from "@aigne/afs-ui";
+
+  const backend = new TermBackend();
+  ```
+</Accordion>
+
+<Accordion title="TTYBackend — raw terminal fallback">
+  A minimal text-mode backend suitable for headless or CI environments.
+
+  ```typescript
+  import { TTYBackend } from "@aigne/afs-ui";
+
+  const backend = new TTYBackend();
+  ```
+</Accordion>
+
+<Tip>
+  For a complete runnable example see the [hello-aup example](https://github.com/AIGNE-io/afs/tree/main/examples/hello-aup) in the AFS repository.
+</Tip>

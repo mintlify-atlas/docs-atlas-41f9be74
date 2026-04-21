@@ -1,0 +1,181 @@
+---
+title: "Mount providers and compose a unified AFS namespace"
+description: "Mount one or more AFS providers at custom paths, compose them into a single namespace, and unmount when done — with path routing explained."
+---
+
+Every AFS instance starts empty. To expose data you mount one or more providers, each at a path of your choosing. Once mounted, all providers appear as a single, unified namespace — agents navigate them with the same 8 operations regardless of what's behind each path.
+
+## Mount a single provider
+
+Install the core package and a provider, then mount:
+
+```bash
+npm install @aigne/afs @aigne/afs-fs
+```
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSFS({ localPath: "./my-project", description: "Project source files" }),
+  "/code",
+);
+
+// Read through the mounted provider
+const readme = await afs.read("/code/README.md");
+console.log(readme.data?.content);
+```
+
+`mount()` returns the `AFS` instance so calls can be chained. The second argument is the path — if omitted, the path defaults to `/modules/{provider.name}`.
+
+## Mount multiple providers at different paths
+
+You can mount any number of providers side by side. Each occupies its own subtree:
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+import { AFSJSON } from "@aigne/afs-json";
+import { AFSGit } from "@aigne/afs-git";
+
+const afs = new AFS();
+
+// Local filesystem
+await afs.mount(
+  new AFSFS({ localPath: "./src", description: "Source code" }),
+  "/code",
+);
+
+// JSON file navigated as a virtual directory tree
+await afs.mount(
+  new AFSJSON({ localPath: "./config.json", description: "App config" }),
+  "/config",
+);
+
+// Git repo (read-only history)
+await afs.mount(
+  new AFSGit({ repoPath: ".", description: "Git history" }),
+  "/git",
+);
+
+// Each mount is independently accessible
+const { data: files } = await afs.list("/code/src");
+const appName = await afs.read("/config/name");
+const commits = await afs.list("/git/commits");
+```
+
+<Note>
+  Providers must not overlap. Mounting `/code` and `/code/src` in the same namespace throws a conflict error. Paths must be disjoint siblings.
+</Note>
+
+## Check mount health
+
+`mount()` runs an async health check in the background. Use `afs.check(path)` to wait for it and surface any error before making requests:
+
+```typescript
+await afs.mount(provider, "/remote");
+
+// Wait for the background health check to complete
+try {
+  await afs.check("/remote");
+  console.log("Provider is ready");
+} catch (err) {
+  console.error("Mount failed:", err.message);
+}
+```
+
+Use the `lenient` option when a provider may be temporarily unavailable at startup:
+
+```typescript
+await afs.mount(provider, "/remote", { lenient: true });
+// Health-check failures are silently swallowed; provider is still mounted
+```
+
+## Inspect mounted providers
+
+```typescript
+const mounts = afs.getMounts();
+for (const { path, module, status } of mounts) {
+  console.log(`${path} → ${module.name} [${status}]`);
+}
+// /code → AFSFS [ready]
+// /config → AFSJSON [ready]
+// /git → AFSGit [checking]
+```
+
+`status` is one of `"checking"`, `"ready"`, or `"error"`.
+
+## Replace an existing mount
+
+Pass `{ replace: true }` to swap a provider at an already-occupied path without throwing:
+
+```typescript
+await afs.mount(newProvider, "/code", { replace: true });
+```
+
+## Unmount a provider
+
+```typescript
+const removed = afs.unmount("/config");
+// true if a provider was at that path, false if nothing was mounted there
+```
+
+Unmounting clears the event sink on the provider and emits an `afs:unmount` change record.
+
+## Path routing — how AFS picks the right provider
+
+When you call any operation, AFS resolves the path to the best-matching mount using **longest-prefix matching**:
+
+<Steps>
+  <Step title="Normalize the path">
+    The incoming path is normalized (trailing slashes removed, `..` rejected).
+  </Step>
+  <Step title="Find the longest matching prefix">
+    AFS iterates all mounts in the default namespace and finds the one whose mount path is the longest prefix of the requested path.
+  </Step>
+  <Step title="Compute the sub-path">
+    The mount path is stripped from the front of the requested path to produce the sub-path passed to the provider. For example, a request to `/code/src/index.ts` with a mount at `/code` sends `/src/index.ts` to the provider.
+  </Step>
+  <Step title="Delegate the operation">
+    The provider's method (`read`, `list`, `search`, etc.) is called with the sub-path and any options.
+  </Step>
+</Steps>
+
+```
+Request: afs.read("/code/src/index.ts")
+Mounts:  /code  → AFSFS
+         /config → AFSJSON
+
+Match:   /code (longest prefix of "/code/src/index.ts")
+Sub-path sent to AFSFS: /src/index.ts
+```
+
+If no mount matches, AFS throws `AFSNotFoundError`.
+
+## Namespaces
+
+Mounts live in the default namespace by default. Namespaces let you maintain isolated mount tables — useful for multi-tenant or sandboxed scenarios:
+
+```typescript
+await afs.mount(providerA, "/data", { namespace: "tenant-1" });
+await afs.mount(providerB, "/data", { namespace: "tenant-2" });
+
+// List only the mounts in a specific namespace
+const mounts = afs.getMounts("tenant-1");
+```
+
+Namespace names cannot contain `/`, `:`, `;`, `|`, or other shell metacharacters.
+
+## Reserved paths
+
+The following path prefixes are reserved by AFS core and cannot be used as mount points:
+
+| Path | Purpose |
+|------|---------|
+| `/registry` | Provider registry virtual path |
+| `/.actions` | Root action dispatching |
+| `/.meta` | Root metadata |
+| `/.as` | Alternative representation routing |

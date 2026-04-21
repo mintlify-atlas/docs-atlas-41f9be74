@@ -1,0 +1,73 @@
+---
+title: "AFS providers: connect any data source"
+description: "Providers plug into AFS at a path and expose any data source — files, databases, APIs, Git repos — through the unified 8-operation interface."
+---
+
+Providers are the extension point of AFS. Each provider implements the same eight operations (`read`, `write`, `list`, `search`, `stat`, `exec`, `explain`, `delete`) and gets mounted at a path in the virtual filesystem. Once mounted, agents interact with the provider through normal AFS calls — they never need to know what is behind the path.
+
+## What is a provider?
+
+A provider is a class that extends `AFSBaseProvider` and registers route handlers via TypeScript decorators. When you call `afs.read("/db/users/42")`, AFS routes the request to whichever provider is mounted at the matching prefix, strips the prefix, and calls the provider's `@Read` handler with the remaining path. From the agent's perspective everything looks like one flat tree; from the provider's perspective it only sees its own sub-tree.
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+import { AFSGit } from "@aigne/afs-git";
+import { SQLiteAFS } from "@aigne/afs-sqlite";
+
+const afs = new AFS();
+
+await afs.mount(new AFSFS({ localPath: "./src" }), "/code");
+await afs.mount(new AFSGit({ repoPath: "/repos/myapp" }), "/git");
+await afs.mount(new SQLiteAFS({ url: "file:./data.db" }), "/db");
+
+// All three providers respond to the same unified API
+const file    = await afs.read("/code/index.ts");
+const branch  = await afs.list("/git/main");
+const user    = await afs.read("/db/users/1");
+```
+
+## Built-in providers
+
+| Package | Description | Write? |
+|---------|-------------|--------|
+| `@aigne/afs-fs` | Local filesystem directory | Yes |
+| `@aigne/afs-git` | Git repository — branches, files, history | Optional |
+| `@aigne/afs-json` | JSON/YAML file as a virtual directory tree | Yes |
+| `@aigne/afs-sqlite` | SQLite database — tables as directories, rows as files | Yes |
+| `@aigne/afs-http` | Expose any AFS instance over HTTP/REST | — |
+| `@aigne/afs-mcp` | Bridge to an external MCP server | Yes |
+| `@aigne/afs-ui` | Agent UI Protocol — render web pages declaratively | Yes |
+
+<Note>
+  You can also write your own provider. See the [Custom provider](/providers/custom) guide for a complete walkthrough using decorators.
+</Note>
+
+## Explore providers
+
+<CardGroup cols={2}>
+  <Card title="Filesystem" icon="folder" href="/providers/filesystem">
+    Read, write, and search local files. Backed by ripgrep for fast content search.
+  </Card>
+  <Card title="Git" icon="code-branch" href="/providers/git">
+    Browse branches and files in any local Git repository. Optional write-back via worktrees.
+  </Card>
+  <Card title="JSON / YAML" icon="brackets-curly" href="/providers/json-yaml">
+    Navigate the keys of a JSON or YAML file as directories and leaf nodes.
+  </Card>
+  <Card title="SQLite" icon="database" href="/providers/sqlite">
+    Tables become directories, rows become readable files, and SQL runs via exec.
+  </Card>
+  <Card title="HTTP" icon="globe" href="/providers/http">
+    Expose any AFS instance over a JSON-RPC HTTP endpoint.
+  </Card>
+  <Card title="MCP" icon="plug" href="/providers/mcp">
+    Mount any MCP (Model Context Protocol) server — tools, resources, and prompts.
+  </Card>
+  <Card title="UI" icon="browser" href="/providers/ui">
+    Render web pages by writing AUP node trees to session paths.
+  </Card>
+  <Card title="Custom provider" icon="code" href="/providers/custom">
+    Extend AFSBaseProvider and use decorators to expose any data source.
+  </Card>
+</CardGroup>

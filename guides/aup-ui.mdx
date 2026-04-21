@@ -1,0 +1,222 @@
+---
+title: "Build agent UIs with AUP and the AFS-UI AFS provider"
+description: "Learn how AUP (Agent UI Protocol) lets agents render web pages through AFS — write a node tree to a session path, receive user events back as exec calls."
+---
+
+AFS-UI turns the browser into an AFS provider. Agents `write` a declarative tree of UI nodes to a session path, and the browser renders it in real time over WebSocket. User interactions — button clicks, form submissions, input changes — come back as `exec` calls. There's no special client SDK, no HTML templates, no React: just AFS operations on `/ui/...` paths.
+
+## How the three packages fit together
+
+<CardGroup cols={3}>
+  <Card title="@aigne/afs-aup" icon="code">
+    **AUP types only.** Defines `AUPNode`, `AUPEvent`, patch ops, and device capability types. Zero runtime dependencies — pure TypeScript types and validation helpers. Import this when you need the type definitions without pulling in the full provider.
+  </Card>
+  <Card title="@aigne/afs-ui" icon="browser">
+    **The UI provider.** Implements `AFSModule` using AUP as its data format. Runs a WebSocket backend (`WebBackend`) that pushes trees and patches to connected browsers. Mount it into AFS at any path (typically `/ui`).
+  </Card>
+  <Card title="@aigne/afs" icon="server">
+    **The orchestrator.** The core AFS instance that routes operations. `write` a tree to `/ui/web/sessions/{sid}/tree`, call `exec` to patch it — AFS handles routing to the UI provider.
+  </Card>
+</CardGroup>
+
+## AUP node tree structure
+
+An AUP tree is a JSON graph of `AUPNode` objects. Every node has a stable `id`, a `type` from the primitive registry, optional `props`, optional `children`, and optional `events`.
+
+```typescript
+interface AUPNode {
+  id: string;                           // Stable identity
+  type: string;                         // Primitive name (view, text, action, ...)
+  props?: Record<string, unknown>;      // Static attributes
+  src?: string;                         // AFS path — read-only data binding
+  bind?: string;                        // AFS path — read-write data binding (inputs)
+  state?: Record<string, unknown>;      // UI-local state (selected tab, expanded, etc.)
+  events?: Record<string, AUPEvent>;    // Event → AFS exec mapping
+  children?: AUPNode[];                 // Child nodes
+}
+```
+
+## Available node types
+
+| Type | Description | Key props |
+|------|-------------|-----------|
+| `view` | Layout container | `layout` (`"row"`, `"column"`, etc.) |
+| `text` | Text / markdown / heading | `content`, `format` (`"markdown"`), `level`, `mode` (`"badge"`) |
+| `action` | Button or link | `label`, `variant` (`"primary"`, `"destructive"`, etc.) |
+| `input` | Text / select / checkbox field | `placeholder`, `label`, `type` |
+| `table` | Tabular data | `columns`, bound to a list via `src` |
+| `media` | Image / video / audio | `src`, `alt` |
+| `overlay` | Modal / drawer / tooltip | `title`, `open` |
+| `chart` | Data visualization | provider-specific |
+| `chat` | Conversational UI | `messages` |
+
+## The hello-AUP example
+
+This minimal example boots the UI backend, waits for a browser to connect, renders a page, and then live-patches a clock node every second:
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSUIProvider, WebBackend } from "@aigne/afs-ui";
+
+// 1. Boot the WebSocket backend
+const PORT = 3210;
+const backend = new WebBackend({ port: PORT });
+await backend.listen();
+
+// 2. Create and mount the UI provider
+const provider = new AFSUIProvider({ backend });
+const afs = new AFS();
+await afs.mount(provider, "/ui");
+
+console.log(`Open http://127.0.0.1:${PORT} in your browser`);
+
+// 3. Wait for a browser session
+const sessionId = await new Promise<string>((resolve) => {
+  const poll = setInterval(() => {
+    const sessions = provider.sessions.list("web");
+    if (sessions.length > 0) {
+      clearInterval(poll);
+      resolve(sessions[0]!.id);
+    }
+  }, 100);
+});
+
+// 4. Write an AUP tree to the session path
+const tree = {
+  id: "root",
+  type: "view",
+  children: [
+    {
+      id: "heading",
+      type: "text",
+      props: { content: "Hello, AUP!", level: 1 },
+    },
+    {
+      id: "intro",
+      type: "text",
+      props: {
+        content: "This page is rendered by an AFS agent using the **Agent UI Protocol**.",
+        format: "markdown",
+      },
+    },
+    {
+      id: "clock",
+      type: "text",
+      props: { content: `Server time: ${new Date().toLocaleTimeString()}` },
+    },
+  ],
+};
+
+await afs.write(`/ui/web/sessions/${sessionId}/tree`, {
+  content: tree,
+  meta: { fullPage: true, style: "midnight" },
+});
+
+// 5. Live-patch the clock every second
+setInterval(async () => {
+  await afs.exec(`/ui/web/sessions/${sessionId}/.actions/aup_patch`, {
+    ops: [
+      {
+        op: "update",
+        id: "clock",
+        props: { content: `Server time: ${new Date().toLocaleTimeString()}` },
+      },
+    ],
+  });
+}, 1000);
+```
+
+Run it with:
+
+```bash
+bun examples/hello-aup/index.ts
+```
+
+## Writing a tree to a session
+
+The session path pattern is:
+
+```
+/ui/{backend}/{sessionId}/tree
+```
+
+Pass the AUP root node as `content` and optional session metadata in `meta`:
+
+```typescript
+await afs.write(`/ui/web/sessions/${sessionId}/tree`, {
+  content: rootNode,
+  meta: {
+    fullPage: true,     // Render as a full page (no chrome)
+    style: "midnight",  // Theme name
+  },
+});
+```
+
+## Incremental patching
+
+Instead of re-writing the entire tree, use `aup_patch` to apply targeted operations. This is far more efficient for live updates:
+
+```typescript
+await afs.exec(`/ui/web/sessions/${sessionId}/.actions/aup_patch`, {
+  ops: [
+    // Update an existing node's props
+    { op: "update", id: "status-text", props: { content: "Processing..." } },
+
+    // Add a new child node
+    { op: "create", parentId: "list", id: "item-42", node: {
+      id: "item-42", type: "text", props: { content: "New item" }
+    }},
+
+    // Remove a node
+    { op: "remove", id: "loading-spinner" },
+
+    // Move a node to a different position
+    { op: "reorder", id: "item-42", parentId: "list", index: 0 },
+  ],
+});
+```
+
+## Receiving user events
+
+Browser events are mapped to AFS `exec` calls via the node's `events` field. When a user clicks a button, the server receives an `exec` on the configured path:
+
+```typescript
+{
+  id: "submit-btn",
+  type: "action",
+  props: { label: "Submit", variant: "primary" },
+  events: {
+    click: {
+      exec: `/ui/web/sessions/${sessionId}/.actions/handle_submit`,
+      args: { formId: "registration" },
+    },
+  },
+}
+```
+
+The agent handles the action by implementing an `exec` handler at that path in a custom provider, or by listening for `exec` calls on the AFS event bus.
+
+## Device capabilities
+
+AUP supports device-aware rendering. The client sends a `DeviceCaps` declaration during the WebSocket handshake describing which primitives it can render natively:
+
+```typescript
+interface DeviceCaps {
+  platform: string;       // "web", "ios", "android", "vr", etc.
+  formFactor: string;     // "desktop", "phone", "tablet", "headset", etc.
+  primitives: Record<string, "native" | "webview" | "partial" | "unsupported">;
+}
+```
+
+The `@aigne/afs-aup` package ships preset `DeviceCaps` objects for common surfaces:
+
+```typescript
+import {
+  DEVICE_CAPS_WEB_FULL,    // All primitives via WebView
+  DEVICE_CAPS_WEB_CHAT,    // Chat + basic UI only
+  DEVICE_CAPS_TTY,         // Terminal (text only)
+  DEVICE_CAPS_TERM,        // xterm.js (text + terminal)
+} from "@aigne/afs-aup";
+```
+
+When a client reports a primitive as `"unsupported"`, the server applies a degradation chain to substitute the node with a supported alternative (for example, a `table` degrades to a `text` list on TTY).

@@ -1,80 +1,222 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with AFS in minutes"
+description: "Install @aigne/afs and @aigne/afs-fs, mount a local directory, and run read, list, search, and write operations in under 5 minutes with working code examples."
 ---
 
-## Get started in three steps
+AFS gives your agent a unified path-based interface to any data source. This guide installs the core package, mounts a local filesystem provider, and walks through the five most common operations. By the end you will have a working AFS instance you can extend with additional providers.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+- Node.js 18 or later (or Bun 1.x)
+- A package manager: npm, yarn, or pnpm
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
 
-### Step 2: Deploy your changes
+<Step title="Install the packages">
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+Install the AFS core package and the filesystem provider. The core package provides the `AFS` class and the base provider interface. `@aigne/afs-fs` adds support for local directories.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<CodeGroup>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash npm
+npm install @aigne/afs @aigne/afs-fs
+```
 
-### Step 3: Go live
+```bash yarn
+yarn add @aigne/afs @aigne/afs-fs
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+```bash pnpm
+pnpm add @aigne/afs @aigne/afs-fs
+```
+
+</CodeGroup>
+
+</Step>
+
+<Step title="Create an AFS instance">
+
+Import `AFS` from `@aigne/afs` and call `new AFS()`. The constructor takes no required arguments. The instance starts with no mounted providers.
+
+```typescript
+import { AFS } from "@aigne/afs";
+
+const afs = new AFS();
+```
+
+</Step>
+
+<Step title="Mount a filesystem provider">
+
+Import `AFSFS` from `@aigne/afs-fs` and pass an instance to `afs.mount()`. The second argument is the mount path — the root under which all files in `localPath` become accessible.
+
+```typescript
+import { AFSFS } from "@aigne/afs-fs";
+
+await afs.mount(
+  new AFSFS({ localPath: "./my-project", description: "Project source files" }),
+  "/code",
+);
+```
+
+<Note>
+  `afs.mount()` is async because it runs a mount check — it verifies the provider is reachable before registering it. If the check times out (default: 10 seconds) or fails, an `AFSMountError` is thrown.
+</Note>
+
+</Step>
+
+<Step title="List and read files">
+
+Use `afs.list()` to get directory contents and `afs.read()` to fetch a file's content. Both return a `data` field containing an array of `AFSEntry` objects (for list) or a single `AFSEntry` (for read).
+
+```typescript
+// List the top-level files under /code
+const { data: files } = await afs.list("/code");
+for (const entry of files) {
+  console.log(entry.path, entry.meta?.size);
+}
+
+// Read a specific file
+const { data: entry } = await afs.read("/code/src/index.ts");
+console.log(entry?.content);
+```
+
+</Step>
+
+<Step title="Search across the provider">
+
+Use `afs.search()` to find entries whose content matches a query string. The result contains an array of matching `AFSEntry` objects.
+
+```typescript
+const { data: results } = await afs.search("/code", "TODO");
+for (const match of results) {
+  console.log(match.path);
+}
+```
+
+</Step>
+
+<Step title="Write a file">
+
+Use `afs.write()` to create or update an entry. Pass the path and a payload object. The `content` field holds the data to write. By default the write mode is `replace`.
+
+```typescript
+await afs.write("/code/output.txt", { content: "Generated by AFS" });
+
+// Verify it was written
+const { data: written } = await afs.read("/code/output.txt");
+console.log(written?.content); // "Generated by AFS"
+```
+
+    <Note>
+      `AFSFS` defaults to `"readwrite"` access. To restrict to read-only, pass `accessMode: "readonly"` when constructing the provider.
+    </Note>
+
+</Step>
+
+<Step title="Mount multiple providers">
+
+You can mount as many providers as you need at different paths. All providers share one namespace, and AFS routes each operation to the correct provider based on the path prefix.
+
+```typescript
+import { AFSJSON } from "@aigne/afs-json";
+
+// Mount a JSON file as a navigable tree
+await afs.mount(
+  new AFSJSON({ localPath: "./config.json", description: "App config" }),
+  "/config",
+);
+
+// Files and JSON config live under one roof
+const { data: readme } = await afs.read("/code/README.md");
+const { data: appName } = await afs.read("/config/name");
+const { data: features } = await afs.list("/config/features");
+```
+
+</Step>
+
+</Steps>
+
+## Complete example
+
+The following is the full working example from the `examples/basic` directory of the AFS repository. It creates a temp directory, mounts a filesystem and JSON provider, then exercises list, read, navigate, search, write, and stat.
+
+```typescript
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AFS } from "@aigne/afs";
+import { AFSFS } from "@aigne/afs-fs";
+import { AFSJSON } from "@aigne/afs-json";
+
+// Set up sample files
+const sampleDir = join(tmpdir(), `afs-example-${Date.now()}`);
+mkdirSync(join(sampleDir, "src"), { recursive: true });
+writeFileSync(join(sampleDir, "README.md"), "# My Project\n\nA sample project.\n");
+writeFileSync(
+  join(sampleDir, "src/index.ts"),
+  "export function hello() {\n  return 'Hello from AFS!';\n}\n",
+);
+writeFileSync(
+  join(sampleDir, "src/utils.ts"),
+  "// TODO: add utility functions\nexport const VERSION = '1.0.0';\n",
+);
+writeFileSync(
+  join(sampleDir, "config.json"),
+  JSON.stringify({ name: "my-app", version: "1.0.0", features: { auth: true, api: true } }, null, 2),
+);
+
+const afs = new AFS();
+
+// Mount providers
+await afs.mount(
+  new AFSFS({ localPath: sampleDir, description: "Sample project files" }),
+  "/project",
+);
+await afs.mount(
+  new AFSJSON({ localPath: join(sampleDir, "config.json"), description: "App config" }),
+  "/config",
+);
+
+// List files
+const { data: files } = await afs.list("/project");
+
+// Read a file
+const readme = await afs.read("/project/README.md");
+console.log(readme.data?.content);
+
+// Navigate JSON as a tree
+const appName = await afs.read("/config/name");
+const { data: features } = await afs.list("/config/features");
+
+// Search
+const { data: todos } = await afs.search("/project", "TODO");
+
+// Write
+await afs.write("/project/output.txt", { content: "Generated by AFS example" });
+
+// Stat (metadata without content)
+const stat = await afs.stat("/project/src/index.ts");
+console.log(stat.data?.meta?.size, "bytes");
+```
+
+<Tip>
+  You can run this example directly with Bun from the repository root: `bun examples/basic/index.ts`
+</Tip>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Core concepts" icon="book" href="/concepts">
+    Understand the entry model, all 8 operations, the mount system, and how paths are routed to providers.
+  </Card>
+  <Card title="Providers overview" icon="plug" href="/providers/overview">
+    Browse all built-in providers: Git, SQLite, HTTP, MCP, and the Agent UI Protocol renderer.
+  </Card>
+  <Card title="Mount guide" icon="layer-group" href="/guides/mounting">
+    Learn advanced mount options: access modes, namespaces, timeouts, and provider composition.
+  </Card>
+  <Card title="Build a provider" icon="wrench" href="/providers/custom">
+    Extend `AFSBaseProvider` and use route decorators to expose any data source through the AFS interface.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,205 @@
+---
+title: "@aigne/afs-git: Git repository provider"
+description: "Mount a local or remote Git repo with @aigne/afs-git — branches become directories, files read via git commands, writes use on-demand worktrees."
+---
+
+`@aigne/afs-git` maps a Git repository into AFS so that every branch becomes a top-level directory and every file in that branch is reachable at `/<branch>/<file-path>`. Read operations use direct `git` commands — no worktree is ever created — making them fast and side-effect-free. Write operations create git worktrees lazily and optionally auto-commit every change.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-git
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSGit } from "@aigne/afs-git";
+
+const afs = new AFS();
+
+await afs.mount(
+  new AFSGit({ repoPath: "./my-repo", accessMode: "readonly" }),
+  "/git",
+);
+
+// List all branches
+const { data: branches } = await afs.list("/git");
+// [{ path: "/git/main", meta: { kind: "git:branch" } }, ...]
+
+// Read a file on the main branch
+const file = await afs.read("/git/main/src/index.ts");
+console.log(file.data?.content);
+
+// Search across the whole branch with git grep
+const hits = await afs.search("/git/main", "TODO");
+```
+
+## Path structure
+
+```
+/                          ← lists all branches
+├── main/                  ← branch directory
+│   ├── src/
+│   │   └── index.ts      ← read at /main/src/index.ts
+│   └── README.md
+├── develop/
+└── feature-auth/
+```
+
+Branch names that contain `/` are encoded with `~` (e.g. `feature/auth` → `feature~auth`).
+
+## Constructor options
+
+```typescript
+interface AFSGitOptions {
+  /** Path to a local git repository. Required unless remoteUrl is provided. */
+  repoPath?: string;
+  /** Remote URL to clone from (https or git protocol). */
+  remoteUrl?: string;
+  /** Mount name (defaults to the basename of repoPath or repo name). */
+  name?: string;
+  /** Human-readable description for agents. */
+  description?: string;
+  /** Restrict access to specific branches. All branches are exposed by default. */
+  branches?: string[];
+  /** "readonly" (default) or "readwrite". */
+  accessMode?: "readonly" | "readwrite";
+  /** Auto-commit every write operation. Default: false. */
+  autoCommit?: boolean;
+  /** Author metadata for auto-commits. */
+  commitAuthor?: { name: string; email: string };
+  /** Shallow clone depth (default: 1, only used with remoteUrl). */
+  depth?: number;
+  /** Clean up a cloned temp directory on cleanup(). Default: true. */
+  autoCleanup?: boolean;
+  /** Auth credentials for private HTTPS remotes. */
+  cloneOptions?: { auth?: { username?: string; password?: string } };
+}
+```
+
+<Note>
+  Either `repoPath` or `remoteUrl` must be provided. When `remoteUrl` is given and `repoPath` does not exist, the repository is cloned automatically.
+</Note>
+
+## Read-only mode
+
+In readonly mode (the default) all operations use direct git plumbing commands. No files are checked out to disk.
+
+```typescript
+const afsGit = new AFSGit({
+  repoPath: "/path/to/repo",
+  accessMode: "readonly",
+  branches: ["main", "develop"],   // optional: limit visible branches
+});
+
+await afs.mount(afsGit, "/git");
+
+// List files recursively in a branch
+const { data } = await afs.list("/git/main", { maxDepth: 5 });
+
+// Read a file — uses `git show`
+const { data: file } = await afs.read("/git/main/package.json");
+
+// Search — uses `git grep`
+const results = await afs.search("/git/main/src", "AuthService");
+```
+
+## Read-write mode
+
+When `accessMode: "readwrite"` is set, write operations create a git worktree for the target branch on first use. Subsequent writes reuse the same worktree.
+
+```typescript
+const afsGit = new AFSGit({
+  repoPath: "/path/to/repo",
+  accessMode: "readwrite",
+  autoCommit: true,
+  commitAuthor: { name: "AI Agent", email: "agent@example.com" },
+});
+
+await afs.mount(afsGit, "/git");
+
+// Write a file — creates worktree and optionally commits
+await afs.write("/git/main/CHANGELOG.md", {
+  content: "## v1.1.0\n- Added new feature",
+});
+
+// Delete a file
+await afs.delete("/git/main/deprecated.ts");
+
+// Rename within the same branch
+await afs.rename(
+  "/git/main/old-name.ts",
+  "/git/main/new-name.ts",
+);
+
+// Clean up worktrees when done
+await afsGit.cleanup();
+```
+
+<Warning>
+  Cross-branch renames are not supported. Both source and destination must be on the same branch.
+</Warning>
+
+## Git workflow actions (readwrite only)
+
+In readwrite mode, each branch exposes four actions at `/<branch>/.actions/<action>`:
+
+<Accordion title="diff — compare two refs">
+  ```typescript
+  const result = await afs.exec("/git/main/.actions/diff", {
+    from: "main",
+    to: "develop",
+    path: "src/",    // optional path filter
+  });
+  console.log(result.data.patch);
+  console.log(result.data.filesChanged);
+  ```
+</Accordion>
+
+<Accordion title="create-branch — create a new branch">
+  ```typescript
+  const result = await afs.exec("/git/main/.actions/create-branch", {
+    name: "feature/my-feature",
+    from: "main",   // optional; defaults to HEAD
+  });
+  console.log(result.data.branch, result.data.hash);
+  ```
+</Accordion>
+
+<Accordion title="commit — commit staged changes">
+  ```typescript
+  const result = await afs.exec("/git/main/.actions/commit", {
+    message: "feat: add new widget",
+    author: { name: "Agent", email: "agent@example.com" },
+  });
+  console.log(result.data.hash, result.data.filesChanged);
+  ```
+</Accordion>
+
+<Accordion title="merge — merge a branch">
+  ```typescript
+  const result = await afs.exec("/git/main/.actions/merge", {
+    branch: "feature/my-feature",
+    message: "Merge feature branch",
+  });
+  console.log(result.data.hash);
+  ```
+</Accordion>
+
+## Cloning a remote repository
+
+```typescript
+const afsGit = new AFSGit({
+  remoteUrl: "https://github.com/org/repo.git",
+  branches: ["main"],             // single-branch clone is faster
+  accessMode: "readonly",
+  depth: 1,
+});
+
+await afsGit.ready();             // wait for clone to finish
+await afs.mount(afsGit, "/remote");
+
+const readme = await afs.read("/remote/main/README.md");
+```

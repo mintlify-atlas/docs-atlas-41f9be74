@@ -1,0 +1,181 @@
+---
+title: "@aigne/afs-mcp: mount MCP servers into AFS"
+description: "Bridge any MCP server into AFS via @aigne/afs-mcp — tools appear at /tools/, resources at /resources/, and prompts at /prompts/ as first-class AFS paths."
+---
+
+`@aigne/afs-mcp` connects to an external MCP server over stdio, HTTP, or SSE and exposes its capabilities as a subtree of your AFS instance. MCP tools appear at `/tools/<name>` and are invoked through `afs.exec`. Resources appear under `/resources/` and prompts under `/prompts/`. A generated `WORLD.md` at the root summarises everything the server offers.
+
+## Installation
+
+```bash
+npm install @aigne/afs @aigne/afs-mcp
+```
+
+## Quick start
+
+```typescript
+import { AFS } from "@aigne/afs";
+import { AFSMCP } from "@aigne/afs-mcp";
+
+const afs = new AFS();
+
+// Mount an MCP server via stdio (e.g. the official filesystem MCP server)
+await afs.mount(
+  new AFSMCP({
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./data"],
+  }),
+  "/mcp",
+);
+
+// Discover tools
+const { data: tools } = await afs.list("/mcp/tools");
+// [{ path: "/mcp/tools/read_file", meta: { kind: "mcp:tool" } }, ...]
+
+// Call a tool
+const result = await afs.exec("/mcp/tools/read_file", {
+  path: "./data/README.md",
+});
+console.log(result.data);
+
+// Read the world documentation
+const world = await afs.read("/mcp/WORLD.md");
+console.log(world.data?.content);
+```
+
+## Virtual path structure
+
+```
+/                          ← root (mcp:module)
+├── WORLD.md               ← generated docs about the server
+├── tools/                 ← list of all tools
+│   ├── read_file          ← mcp:tool — callable via exec
+│   ├── write_file
+│   └── ...
+├── resources/             ← static resources (if any)
+│   └── ...
+└── prompts/               ← prompt templates (if any)
+    └── ...
+```
+
+## Constructor options
+
+```typescript
+interface AFSMCPOptions {
+  /** Module name (used as part of the mount path). */
+  name?: string;
+  /** Human-readable description. */
+  description?: string;
+
+  /** Transport type: "stdio" | "http" | "sse". Required. */
+  transport: "stdio" | "http" | "sse";
+
+  // Stdio transport
+  /** Command to spawn (e.g. "npx"). Required for stdio. */
+  command?: string;
+  /** Arguments passed to the command. */
+  args?: string[];
+  /** Extra environment variables for the child process. */
+  env?: Record<string, string>;
+  /** Inherit the full parent environment. Default: false (safe allowlist only). */
+  inheritEnv?: boolean;
+  /** Allow shell interpreters as the command. Default: false. */
+  allowShellCommand?: boolean;
+
+  // HTTP / SSE transport
+  /** Server URL. Required for http and sse transports. */
+  url?: string;
+  /** Additional HTTP headers. */
+  headers?: Record<string, string>;
+
+  // Common
+  /** Connection timeout in milliseconds. */
+  timeout?: number;
+  /** Maximum reconnection attempts. */
+  maxReconnects?: number;
+}
+```
+
+<Note>
+  `stdio` requires `command`. `http` and `sse` require `url`. The schema validation will reject invalid combinations at construction time.
+</Note>
+
+## Transport types
+
+<Accordion title="stdio — spawn a local MCP process">
+  The most common transport. AFS spawns the MCP server as a child process and communicates over stdin/stdout.
+
+  ```typescript
+  new AFSMCP({
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN! },
+  })
+  ```
+
+  By default only a safe allowlist of environment variables (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `NODE_ENV`, `SHELL`) is forwarded to the child. Pass `inheritEnv: true` to forward the full environment.
+</Accordion>
+
+<Accordion title="http — connect to a remote MCP server">
+  Connects to an MCP server that exposes a Streamable HTTP transport.
+
+  ```typescript
+  new AFSMCP({
+    transport: "http",
+    url: "https://my-mcp-server.example.com/mcp",
+    headers: { Authorization: `Bearer ${process.env.MCP_TOKEN}` },
+  })
+  ```
+</Accordion>
+
+<Accordion title="sse — Server-Sent Events transport">
+  Connects to a legacy MCP server using the SSE transport.
+
+  ```typescript
+  new AFSMCP({
+    transport: "sse",
+    url: "http://localhost:8080/sse",
+  })
+  ```
+</Accordion>
+
+## Calling tools
+
+Tools are invoked by calling `afs.exec` on the tool's path. The arguments match the tool's `inputSchema`.
+
+```typescript
+// Read the tool's schema
+const toolEntry = await afs.read("/mcp/tools/create_issue");
+console.log(toolEntry.data?.meta?.inputSchema);
+
+// Call the tool
+const result = await afs.exec("/mcp/tools/create_issue", {
+  title: "Bug: crash on startup",
+  body: "Steps to reproduce...",
+  labels: ["bug"],
+});
+console.log(result.data);
+```
+
+## Reading resources
+
+Resources exposed by the MCP server are available under `/resources/` and can be fetched with `afs.read`.
+
+```typescript
+const { data: resources } = await afs.list("/mcp/resources");
+
+const content = await afs.read("/mcp/resources/some/resource");
+console.log(content.data?.content);
+```
+
+## Security
+
+The stdio transport includes hardened defaults:
+
+- **Path traversal** in the command or args is rejected.
+- **Shell interpreters** (`sh`, `bash`, `zsh`, etc.) are blocked unless `allowShellCommand: true` is set.
+- **Shell metacharacters** (`;`, `|`, `&`, etc.) in the command are rejected.
+
+These guards prevent command injection when the MCP command originates from untrusted input.
